@@ -26,23 +26,27 @@ interface PropertyImage {
 interface PropertyProps {
   name: string
   price: string
+  area :string
   location: PropertyLocation
   mainImage: string
   galleryImages: PropertyImage[]
   units: PropertyUnit[]
   amenities: Amenity[]
   onClose?: () => void
+  onScheduleVisit?: (property: PropertyProps) => void
 }
 
 export default function PropertyDetails({
   name = "Skyline Heights",
   price = "₹1.8 Crores",
+  area = "1500 sq.ft",
   location = { city: "Chennai", mapUrl: "" },
   mainImage = "/placeholder.svg?height=150&width=300",
   galleryImages = [],
   units = [{ type: "2 BHK" }, { type: "3 BHK" }],
   amenities = [{ name: "Parking" }, { name: "Gym" }, { name: "Pool" }],
-  onClose = () => {},
+  onScheduleVisit = () => { },
+  onClose = () => { },
 }: PropertyProps) {
   const [carouselOpen, setCarouselOpen] = useState(false)
   const [initialImageIndex, setInitialImageIndex] = useState(0)
@@ -53,11 +57,21 @@ export default function PropertyDetails({
     setInitialImageIndex(index)
     setCarouselOpen(true)
   }
+  const property = {
+    name,
+    price,
+    area,
+    location,
+    mainImage,
+    galleryImages,
+    units,
+    amenities,
+  }
 
   return (
     <>
-      <div className="bg-white text-black rounded-lg overflow-hidden shadow-lg border-0 scroll-container">
-        <div className="bg-blue-800 text-white p-4 flex justify-between items-center">
+      <div className="border-amber-50 border-1 bg-white text-black rounded-lg overflow-hidden shadow-lg scroll-container">
+        <div className="bg-[#194185] text-white p-4 flex justify-between items-center">
           <h2 className="font-semibold text-lg">Property Details</h2>
           <button onClick={onClose} className="text-white hover:bg-blue-700">
             <X size={18} />
@@ -80,8 +94,9 @@ export default function PropertyDetails({
           ))}
           {galleryImages.length > 3 && (
             <div
-              className="cursor-pointer relative h-[47px] w-[50px] flex-shrink-0 bg-gray-800 rounded-sm flex items-center justify-center text-white font-semibold"
+              className="cursor-pointer relative h-[47px] w-[62px] flex-shrink-0 bg-gray-700 rounded-sm flex items-center justify-center text-white font-semibold"
               onClick={() => openCarousel(3)}
+
             >
               {galleryImages.length - 2}+
             </div>
@@ -91,21 +106,29 @@ export default function PropertyDetails({
         <div className="p-4 border-b border-dashed border-gray-200">
           <div className="flex justify-between items-start">
             <div>
-              <h3 className="text-xl font-bold text-gray-800">{name}</h3>
+              <h3 className="text-lg font-semibold text-gray-800">{name}</h3>
               <div className="flex items-center text-gray-600 mt-1">
                 <MapPin className="h-4 w-4 mr-1" />
                 <span className="text-sm">{location.city}</span>
               </div>
             </div>
-            <div className="text-xl font-bold text-green-700">{price}</div>
+            <div>
+              <h3 className=" text-gray-800">Starting from</h3>
+              <div className="text-xl font-bold text-green-700">{price}</div>
+            </div>
           </div>
         </div>
-
+        <button
+          className="mt-2 w-[174px] h-[40px] bg-blue-900 text-[#F5FAFF] rounded-xl ml-16 hover:bg-blue-800"
+          onClick={(e: React.MouseEvent<HTMLButtonElement>) => onScheduleVisit(property)} // Explicitly handle MouseEvent
+        >
+          Schedule a site visit
+        </button>
         <div className="p-4 border-b border-dashed border-gray-200">
           <h4 className="font-semibold mb-2">Types of Units</h4>
-          <div className="space-y-2">
+          <div className="space-y-2 flex gap-3">
             {units.map((unit, index) => (
-              <div key={index} className="text-gray-700">
+              <div key={index} className="text-gray-300 bg-[#475467] h-[32px] p-3 rounded-sm flex items-center justify-center text-lg">
                 {unit.type}
               </div>
             ))}

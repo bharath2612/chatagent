@@ -1,20 +1,42 @@
-// BookingConfirmation.tsx
 "use client"
+import { useState } from "react"
+import React from "react"
+import { motion, AnimatePresence } from "framer-motion"
 
-import React, { useState } from "react"
-import { motion, Variants } from "framer-motion"
+interface PropertyUnit {
+  type: string
+}
 
-// Animation variants for child elements
-const childVariants: Variants = {
-  hidden: { opacity: 0, y: 10 },
-  visible: { opacity: 1, y: 0, transition: { duration: 0.3 } },
-};
+interface Amenity {
+  name: string
+}
 
+interface PropertyLocation {
+  city: string
+  mapUrl: string
+}
+
+interface PropertyImage {
+  url: string
+  alt: string
+}
+interface PropertyProps {
+  name: string
+  price: string
+  area :string
+  location: PropertyLocation
+  mainImage: string
+  galleryImages: PropertyImage[]
+  units: PropertyUnit[]
+  amenities: Amenity[]
+  onClose?: () => void
+}
 interface BookingConfirmationProps {
   onClose: () => void
   selectedTime: string
   selectedDay: string
   onConfirm: () => void
+  property: PropertyProps
 }
 
 export default function BookingConfirmation({
@@ -22,6 +44,7 @@ export default function BookingConfirmation({
   selectedTime,
   selectedDay,
   onConfirm,
+  property,
 }: BookingConfirmationProps) {
   const [name, setName] = useState<string>("")
   const [number, setNumber] = useState<string>("")
@@ -29,12 +52,11 @@ export default function BookingConfirmation({
   return (
     <div className="space-y-6 max-w-sm w-full">
       <motion.p
-        variants={childVariants}
         className="text-xl font-normal leading-6"
       >
         To confirm the booking please verify your name and number
       </motion.p>
-      <motion.div variants={childVariants} className="space-y-4">
+      <motion.div  className="space-y-4">
         <input
           type="text"
           value={name}
@@ -50,7 +72,7 @@ export default function BookingConfirmation({
           className="w-full px-4 py-3 bg-[#1e4db7] text-white placeholder-white placeholder-opacity-80 rounded-3xl border-2 border-blue-500 text-sm text-center font-normal focus:outline-none"
         />
       </motion.div>
-      <motion.div variants={childVariants} className="space-y-3">
+      <motion.div  className="space-y-3">
         <p className="text-sm italic">Selected: {selectedDay} at {selectedTime}</p>
         <button
           onClick={onConfirm}
