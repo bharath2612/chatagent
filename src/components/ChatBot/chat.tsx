@@ -1,13 +1,14 @@
 "use client"
 
-import type React from "react"
+import React from "react"
 import { useState, useRef } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import { MessageSquare, X, Mic, MicOff, Phone, Send } from "lucide-react"
 import PropertyList from "../PropertyComponents/PropertyList"
-import TimePick from "../Appointment/timePick"
+import PropertyConfirmation from "../Appointment/confirmProperty" // Updated import
+import AppointmentConfirmed from "../Appointment/Confirmations"
+import { VoiceWaveform } from "./VoiceWaveForm"
 
-// Define the Property-related interfaces (same as in PropertyDetails)
 interface PropertyUnit {
   type: string
 }
@@ -29,6 +30,7 @@ interface PropertyImage {
 interface PropertyProps {
   name: string
   price: string
+  area :string
   location: PropertyLocation
   mainImage: string
   galleryImages: PropertyImage[]
@@ -36,7 +38,6 @@ interface PropertyProps {
   amenities: Amenity[]
   onClose?: () => void
 }
-
 export default function RealEstateAgent() {
   const [inputVisible, setInputVisible] = useState(false)
   const [micMuted, setMicMuted] = useState(false)
@@ -44,23 +45,22 @@ export default function RealEstateAgent() {
   const [showProperties, setShowProperties] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const [appointment, setAppointment] = useState(false)
-  // Sample property data (this could come from an API or props)
-  const schedule = {
-    monday: [
-      "10:00 am - 12:00 pm",
-      "2:00 pm - 4:00 pm",
-      "6:00 pm - 8:00 pm"
-    ],
-    tuesday: [
-      "11:00 am - 1:00 pm"
-    ]
-  };
+  const [selectedProperty, setSelectedProperty] = useState<PropertyProps | null>(null)
+  const [selectedDay, setSelectedDay] = useState<string>("Monday")
+  const [selectedTime, setSelectedTime] = useState<string | null>(null)
+  const [isConfirmed, setIsConfirmed] = useState<boolean>(false)
 
-  const properties: PropertyProps[] = [
+  const schedule = {
+    monday: ["10:00 am - 12:00 pm", "2:00 pm - 4:00 pm", "6:00 pm - 8:00 pm"],
+    tuesday: ["11:00 am - 1:00 pm"],
+  }
+
+   const properties: PropertyProps[] = [
     {
       name: "Skyline Heights",
       price: "₹1.8 Crores",
-      location: { city: "Dubai", mapUrl: "https://www.google.com/maps/embed?pb=..." },
+      area: "1200 sq.ft",
+      location: { city: "Chennai", mapUrl: "https://www.google.com/maps/embed?pb=..." },
       mainImage: "/media/image.jpg",
       galleryImages: [
         { url: "/media/image.jpg", alt: "Thumbnail 1" },
@@ -70,10 +70,12 @@ export default function RealEstateAgent() {
       ],
       units: [{ type: "2 BHK" }, { type: "3 BHK" }],
       amenities: [{ name: "Parking" }, { name: "Gym" }, { name: "Pool" }],
+      onClose: () => {},
     },
     {
       name: "Ocean View",
       price: "₹2.5 Crores",
+      area: "1200 sqft",
       location: { city: "Mumbai", mapUrl: "https://www.google.com/maps/embed?pb=..." },
       mainImage: "/placeholder.svg?height=150&width=300",
       galleryImages: [
@@ -84,6 +86,7 @@ export default function RealEstateAgent() {
       ],
       units: [{ type: "3 BHK" }, { type: "4 BHK" }],
       amenities: [{ name: "Parking" }, { name: "Gym" }, { name: "Terrace" }],
+      onClose: () => {},
     },
   ]
 
@@ -111,6 +114,33 @@ export default function RealEstateAgent() {
     if (e.key === "Enter") {
       handleSend()
     }
+  }
+
+  const handleScheduleVisit = (property: PropertyProps) => {
+    setShowProperties(false)
+    setSelectedProperty(property)
+    setAppointment(true)
+    setSelectedTime(null) // Reset time selection
+    setIsConfirmed(false) // Reset confirmation
+  }
+
+  const handleTimeClick = (time: string) => {
+    setSelectedTime(time)
+  }
+
+  const handleCloseConfirmation = () => {
+    setSelectedTime(null)
+  }
+
+  const handleConfirmBooking = () => {
+    setIsConfirmed(true)
+  }
+
+  const handleReset = () => {
+    setAppointment(false)
+    setSelectedProperty(null)
+    setSelectedTime(null)
+    setIsConfirmed(false)
   }
 
   return (
@@ -207,12 +237,22 @@ export default function RealEstateAgent() {
           <X size={20} />
         </button>
       </div>
-
+      <div className="border-1 h-10 rounded-3xl w-72 p-4 justify-evenly ml-5">
+       <VoiceWaveform/>
+       </div>
       {/* Content Area */}
-      <div className="flex-1 flex flex-col items-center justify-center h-[400px] relative mt-4">
-        {appointment && (
-          <TimePick schedule={schedule} />
+        {appointment && selectedProperty && (
+      <div className="h-[400px]">
+           <PropertyConfirmation
+           onClose={handleCloseConfirmation}
+           selectedTime={selectedTime || ""}
+           selectedDay={selectedDay}
+           onConfirm={handleConfirmBooking}
+           property={selectedProperty}
+         />
+        </div>
         )}
+
         {/* {!showProperties && (
           <div className="text-center">
             <div className="flex justify-center space-x-1">
@@ -227,17 +267,18 @@ export default function RealEstateAgent() {
 
         <AnimatePresence mode="wait">
           {showProperties && (
+        <div className="flex-1 flex flex-col items-center justify-center h-[350px] relative mt-4">
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -20 }}
               className="absolute inset-0 overflow-auto px-4 py-2"
             >
-              <PropertyList properties={properties} />
+              <PropertyList properties={properties} onScheduleVisit={handleScheduleVisit}/>
             </motion.div>
+          </div>
           )}
         </AnimatePresence>
-      </div>
 
       {/* Bottom Controls */}
       <div className="absolute bottom-0 left-0 right-0">
@@ -258,9 +299,9 @@ export default function RealEstateAgent() {
                   onChange={(e) => setInputValue(e.target.value)}
                   onKeyDown={handleKeyDown}
                   placeholder="Show me some properties in Dubai"
-                  className="flex-1 mt-0.5 bg-transparent outline-none text-white placeholder:text-white  placeholder:opacity-50"
+                  className="flex-1 mt-1 bg-transparent outline-none text-white placeholder:text-white  placeholder:opacity-50"
                 />
-                <button onClick={handleSend} className="ml-2 text-white">
+                <button onClick={handleSend} className="ml-2 mt-2 text-white">
                   <Send size={18} />
                 </button>
               </div>

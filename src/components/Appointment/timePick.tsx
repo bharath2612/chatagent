@@ -1,4 +1,3 @@
-// TimePick.tsx
 "use client"
 
 import React, { useState } from "react"
@@ -6,6 +5,35 @@ import BookingConfirmation from "./BookingConfirmation"
 import AppointmentConfirmed from "./Confirmations"
 import { motion, AnimatePresence, Variants } from "framer-motion"
 
+interface PropertyUnit {
+  type: string
+}
+
+interface Amenity {
+  name: string
+}
+
+interface PropertyLocation {
+  city: string
+  mapUrl: string
+}
+
+interface PropertyImage {
+  url: string
+  alt: string
+}
+
+interface PropertyProps {
+  name: string
+  price: string
+  area :string
+  location: PropertyLocation
+  mainImage: string
+  galleryImages: PropertyImage[]
+  units: PropertyUnit[]
+  amenities: Amenity[]
+  onClose?: () => void
+}
 // Animation variants for the container
 const containerVariants: Variants = {
   hidden: { opacity: 0, y: 20 },
@@ -19,13 +47,13 @@ const containerVariants: Variants = {
     },
   },
   exit: { opacity: 0, y: 20, transition: { duration: 0.3 } },
-};
+}
 
 // Animation variants for child elements
 const childVariants: Variants = {
   hidden: { opacity: 0, y: 10 },
   visible: { opacity: 1, y: 0, transition: { duration: 0.3 } },
-};
+}
 
 type Schedule = {
   [day: string]: string[]
@@ -33,9 +61,10 @@ type Schedule = {
 
 interface TimePickProps {
   schedule: Schedule
+  property: PropertyProps // Add property prop
 }
 
-export default function TimePick({ schedule }: TimePickProps) {
+export default function TimePick({ schedule, property }: TimePickProps) {
   const [selectedDay, setSelectedDay] = useState<string>("Monday")
   const [selectedTime, setSelectedTime] = useState<string | null>(null)
   const [isConfirmed, setIsConfirmed] = useState<boolean>(false)
@@ -53,7 +82,7 @@ export default function TimePick({ schedule }: TimePickProps) {
   }
 
   return (
-    <div className="p-4 absolute top-24 bg-[#0b3d91] text-white rounded-xl space-y-4">
+    <div className="p-4 absolute top-36 bg-[#0b3d91] text-white rounded-xl space-y-4">
       <AnimatePresence mode="wait">
         {isConfirmed ? (
           <motion.div
@@ -63,7 +92,7 @@ export default function TimePick({ schedule }: TimePickProps) {
             animate="visible"
             exit="exit"
           >
-            <AppointmentConfirmed />
+            <AppointmentConfirmed property={property} />
           </motion.div>
         ) : selectedTime ? (
           <motion.div
@@ -78,6 +107,7 @@ export default function TimePick({ schedule }: TimePickProps) {
               selectedTime={selectedTime}
               selectedDay={selectedDay}
               onConfirm={handleConfirmBooking}
+              property={property}
             />
           </motion.div>
         ) : (
@@ -88,8 +118,10 @@ export default function TimePick({ schedule }: TimePickProps) {
             animate="visible"
             exit="exit"
           >
-            <motion.p variants={childVariants} className="text-lg">
-              <em className="text-3xl font-sans">Appointment time available for</em>
+            <motion.p variants={childVariants} className="text-lg ">
+              <em className="text-3xl font-sans">
+                Appointment time available for {property.name}
+              </em>
               <select
                 className="rounded-lg mb-4 bg-transparent text-white font-semibold ml-2 text-2xl underline"
                 value={selectedDay}
@@ -121,10 +153,7 @@ export default function TimePick({ schedule }: TimePickProps) {
                   </motion.div>
                 ))
               ) : (
-                <motion.p
-                  variants={childVariants}
-                  className="italic text-sm"
-                >
+                <motion.p variants={childVariants} className="italic text-sm">
                   No time slots available
                 </motion.p>
               )}

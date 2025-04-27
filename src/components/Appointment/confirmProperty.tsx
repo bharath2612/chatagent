@@ -1,10 +1,10 @@
 "use client"
 
-import type React from "react"
+import React from "react"
 import { useState } from "react"
-import { motion, AnimatePresence } from "framer-motion"
-import PropertyDetails from "./propertyDetails"
+import TimePick from "./timePick"
 
+// Interface definitions remain the same
 interface PropertyUnit {
   type: string
 }
@@ -26,7 +26,7 @@ interface PropertyImage {
 interface PropertyProps {
   name: string
   price: string
-  area :string
+  area: string
   location: PropertyLocation
   mainImage: string
   galleryImages: PropertyImage[]
@@ -35,37 +35,36 @@ interface PropertyProps {
   onClose?: () => void
 }
 
-interface PropertyListProps {
-  properties: PropertyProps[] // Only properties is needed now
-  onScheduleVisit?: (property: PropertyProps) => void
+interface BookingConfirmationProps {
+  onClose: () => void
+  selectedTime: string
+  selectedDay: string
+  onConfirm: () => void
+  property: PropertyProps
 }
 
-export default function PropertyList({ properties ,onScheduleVisit}: PropertyListProps) {
-  const [selectedProperty, setSelectedProperty] = useState<PropertyProps | null>(null)
+export default function PropertyConfirmation({
+  onClose,
+  selectedTime,
+  selectedDay,
+  onConfirm,
+  property,
+}: BookingConfirmationProps) {
+  const [confirmed, setConfirmed] = useState<boolean>(false)
 
-  const handlePropertyClick = (property: PropertyProps) => {
-    setSelectedProperty(property)
-  }
 
-  const handleCloseDetails = () => {
-    setSelectedProperty(null)
+
+  const schedule = {
+    monday: ["10:00 am - 12:00 pm", "2:00 pm - 4:00 pm", "6:00 pm - 8:00 pm"],
+    tuesday: ["11:00 am - 1:00 pm"],
   }
 
   return (
-    <AnimatePresence mode="wait">
-      {!selectedProperty ? (
-        <motion.div
-          key="list"
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: -20 }}
-          className="space-y-4"
-        >
-          {properties.map((property, index) => (
-            <div
-              key={index}
+    <div>
+      {!confirmed ? (
+        <div className="p-4 bg-[#0b3d91] text-white rounded-xl space-y-4 mt-10">
+          <div
               className="p-2 bg-white rounded-lg cursor-pointer hover:bg-slate-200 flex"
-              onClick={() => handlePropertyClick(property)}
             >
                 <div>
                 <img src="/media/image.jpg" alt={property.name} className="h-[80px] w-[80px] mr-3 object-cover rounded-lg" />
@@ -81,22 +80,30 @@ export default function PropertyList({ properties ,onScheduleVisit}: PropertyLis
               </div>
               </div>
             </div>
-          ))}
-        </motion.div>
-      ) : (
-        <motion.div
-          key="details"
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: -20 }}
-        >
-            <div className="h-[400px]">
-          <PropertyDetails {...selectedProperty} onClose={handleCloseDetails}
-          onScheduleVisit={onScheduleVisit}
-           />
+          <div className="flex space-x-4 mt-4">
+            <button
+              className="px-4 py-2 bg-gray-200 text-blue-900 rounded-lg hover:bg-gray-300"
+              onClick={onClose}
+            >
+              Cancel
+            </button>
+            <button
+              className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600"
+              onClick={() => {
+                setConfirmed(true)
+                onConfirm()
+              }}
+            >
+              Confirm
+            </button>
           </div>
-        </motion.div>
+        </div>
+      ) : (
+        <TimePick
+          schedule={schedule}
+          property={property}
+        />
       )}
-    </AnimatePresence>
+    </div>
   )
 }
