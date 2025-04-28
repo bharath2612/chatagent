@@ -5,7 +5,11 @@ import { motion, Variants } from "framer-motion"
 
 interface AppointmentConfirmedProps {
   property: PropertyProps
+  onClose?: () => void
+  date: string
+  time: string
 }
+
 interface PropertyUnit {
   type: string
 }
@@ -33,7 +37,6 @@ interface PropertyImage {
   galleryImages: PropertyImage[]
   units: PropertyUnit[]
   amenities: Amenity[]
-  onClose?: () => void
 }
 // Animation variants for child elements
 const childVariants: Variants = {
@@ -41,7 +44,7 @@ const childVariants: Variants = {
   visible: { opacity: 1, y: 0, transition: { duration: 0.3 } },
 };
 
-export default function AppointmentConfirmed({ property }: AppointmentConfirmedProps) {
+export default function AppointmentConfirmed({ property, onClose }: AppointmentConfirmedProps) {
   return (
     <div className="space-y-6 max-w-sm w-full ml-2">
       <motion.p

@@ -1,13 +1,27 @@
 "use client"
 
-import React from "react"
-import { useState, useRef } from "react"
+import React, { useState, useRef, useEffect, useCallback } from "react"
 import { motion, AnimatePresence } from "framer-motion"
-import { MessageSquare, X, Mic, MicOff, Phone, Send } from "lucide-react"
+import { MessageSquare, X, Mic, MicOff, Phone, Send, PhoneOff, Loader } from "lucide-react"
+import { v4 as uuidv4 } from 'uuid';
+
+// UI Components (existing)
 import PropertyList from "../PropertyComponents/PropertyList"
 import PropertyConfirmation from "../Appointment/confirmProperty" // Updated import
 import AppointmentConfirmed from "../Appointment/Confirmations"
 import { VoiceWaveform } from "./VoiceWaveForm"
+
+// Agent Logic Imports
+import { 
+    SessionStatus, 
+    TranscriptItem, 
+    AgentConfig, 
+    AgentMetadata, 
+    ServerEvent 
+} from "@/types/types";
+import { allAgentSets, defaultAgentSetKey } from "@/agentConfigs";
+import { createRealtimeConnection } from "@/libs/realtimeConnection";
+import { useHandleServerEvent } from "@/hooks/useHandleServerEvent";
 
 interface PropertyUnit {
   type: string
@@ -38,9 +52,17 @@ interface PropertyProps {
   amenities: Amenity[]
   onClose?: () => void
 }
-export default function RealEstateAgent() {
+
+// --- Add Props Interface --- 
+interface RealEstateAgentProps {
+    chatbotId: string; // Receive chatbotId from parent page
+}
+
+// --- Agent Component ---
+export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { // Accept chatbotId prop
+  // --- Existing UI State --- 
   const [inputVisible, setInputVisible] = useState(false)
-  const [micMuted, setMicMuted] = useState(false)
+  const [micMuted, setMicMuted] = useState(false) // Placeholder for UI toggle
   const [inputValue, setInputValue] = useState("")
   const [showProperties, setShowProperties] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -50,46 +72,366 @@ export default function RealEstateAgent() {
   const [selectedTime, setSelectedTime] = useState<string | null>(null)
   const [isConfirmed, setIsConfirmed] = useState<boolean>(false)
 
-  const schedule = {
-    monday: ["10:00 am - 12:00 pm", "2:00 pm - 4:00 pm", "6:00 pm - 8:00 pm"],
-    tuesday: ["11:00 am - 1:00 pm"],
-  }
+  // --- Agent & Connection State --- 
+  const [sessionStatus, setSessionStatus] = useState<SessionStatus>("DISCONNECTED");
+  const [transcriptItems, setTranscriptItems] = useState<TranscriptItem[]>([]);
+  const [selectedAgentConfigSet, setSelectedAgentConfigSet] = useState<AgentConfig[] | null>(
+    allAgentSets[defaultAgentSetKey] || null
+  );
+  const [selectedAgentName, setSelectedAgentName] = useState<string>(
+     selectedAgentConfigSet?.[0]?.name || ""
+  );
+  // Store agent metadata directly in state, initialize with chatbotId
+  const [agentMetadata, setAgentMetadata] = useState<AgentMetadata | null>(null); // Initialize as null initially
 
-   const properties: PropertyProps[] = [
-    {
-      name: "Skyline Heights",
-      price: "₹1.8 Crores",
-      area: "1200 sq.ft",
-      location: { city: "Chennai", mapUrl: "https://www.google.com/maps/embed?pb=..." },
-      mainImage: "/media/image.jpg",
-      galleryImages: [
-        { url: "/media/image.jpg", alt: "Thumbnail 1" },
-        { url: "/media/image1.jpg", alt: "Thumbnail 2" },
-        { url: "/media/image2.png", alt: "Thumbnail 3" },
-        { url: "/media/image3.png", alt: "Thumbnail 4" },
-      ],
-      units: [{ type: "2 BHK" }, { type: "3 BHK" }],
-      amenities: [{ name: "Parking" }, { name: "Gym" }, { name: "Pool" }],
-      onClose: () => {},
-    },
-    {
-      name: "Ocean View",
-      price: "₹2.5 Crores",
-      area: "1200 sqft",
-      location: { city: "Mumbai", mapUrl: "https://www.google.com/maps/embed?pb=..." },
-      mainImage: "/placeholder.svg?height=150&width=300",
-      galleryImages: [
-        { url: "/media/image.jpg", alt: "Thumbnail 1" },
-        { url: "/media/image1.jpg", alt: "Thumbnail 2" },
-        { url: "/media/image2.png", alt: "Thumbnail 3" },
-        { url: "/media/image3.png", alt: "Thumbnail 4" },
-      ],
-      units: [{ type: "3 BHK" }, { type: "4 BHK" }],
-      amenities: [{ name: "Parking" }, { name: "Gym" }, { name: "Terrace" }],
-      onClose: () => {},
-    },
-  ]
+  // --- Refs for WebRTC --- 
+  const pcRef = useRef<RTCPeerConnection | null>(null);
+  const dcRef = useRef<RTCDataChannel | null>(null);
+  const audioElementRef = useRef<HTMLAudioElement | null>(null);
+  const transcriptEndRef = useRef<HTMLDivElement | null>(null); // Ref to scroll transcript
 
+  // --- Transcript Management --- 
+  const addTranscriptMessage = useCallback((itemId: string, role: "user" | "assistant" | "system", text: string) => {
+      setTranscriptItems((prev) => [
+          ...prev,
+          {
+              itemId,
+              type: "MESSAGE",
+              role,
+              text,
+              createdAtMs: Date.now(),
+              status: role === 'assistant' ? 'IN_PROGRESS' : 'DONE', // Assistant messages start in progress
+          },
+      ]);
+  }, []);
+
+  const updateTranscriptMessage = useCallback((itemId: string, textDelta: string, isDelta: boolean) => {
+      setTranscriptItems((prev) =>
+          prev.map((item) => {
+              if (item.itemId === itemId && item.type === 'MESSAGE') {
+                  return {
+                      ...item,
+                      text: isDelta ? (item.text || "") + textDelta : textDelta, // Append if delta, replace otherwise
+                      status: 'IN_PROGRESS', // Keep in progress while updating
+                  };
+              }
+              return item;
+          })
+      );
+  }, []);
+
+  const updateTranscriptItemStatus = useCallback((itemId: string, status: "IN_PROGRESS" | "DONE" | "ERROR") => {
+      setTranscriptItems((prev) =>
+          prev.map((item) => {
+              if (item.itemId === itemId) {
+                  return { ...item, status };
+              }
+              return item;
+          })
+      );
+  }, []);
+
+  // --- Send Client Events --- 
+  const sendClientEvent = useCallback((eventObj: any, eventNameSuffix = "") => {
+    if (dcRef.current && dcRef.current.readyState === "open") {
+      console.log(`[Send Event] ${eventObj.type} ${eventNameSuffix}`, eventObj);
+      dcRef.current.send(JSON.stringify(eventObj));
+    } else {
+      console.error(
+        `[Send Event Error] Data channel not open. Attempted to send: ${eventObj.type} ${eventNameSuffix}`,
+        eventObj
+      );
+      // Optionally add an error message to the transcript
+       addTranscriptMessage(uuidv4(), 'system', `Error: Could not send message. Connection lost.`);
+       setSessionStatus("DISCONNECTED"); // Consider disconnecting if send fails
+    }
+  }, [addTranscriptMessage]); // Updated dependency
+
+  // --- Initialize Event Handler Hook --- 
+  const handleServerEventRef = useHandleServerEvent({
+      setSessionStatus,
+      selectedAgentName,
+      selectedAgentConfigSet,
+      sendClientEvent,
+      setSelectedAgentName,
+      // Pass transcript state and functions
+      transcriptItems,
+      addTranscriptMessage,
+      updateTranscriptMessage,
+      updateTranscriptItemStatus,
+  });
+
+  // --- Fetch Org Metadata (Modified) --- 
+  const fetchOrgMetadata = useCallback(async () => {
+      // Use the chatbotId passed via props
+      if (!selectedAgentConfigSet || !chatbotId) {
+           console.warn("[Metadata] Agent config set or chatbotId missing.");
+           if (!chatbotId) addTranscriptMessage(uuidv4(), 'system', 'Configuration Error: Chatbot ID missing.');
+           return;
+      }
+      console.log("[Metadata] Attempting to fetch org metadata...");
+      
+      const agentWithFetch = selectedAgentConfigSet.find(a => a.toolLogic?.fetchOrgMetadata);
+      const fetchTool = agentWithFetch?.toolLogic?.fetchOrgMetadata;
+
+      if (fetchTool) {
+          try {
+              // Use the existing session ID from metadata state
+              const sessionId = agentMetadata?.session_id || uuidv4(); // Fallback if metadata not set yet
+              
+              console.log(`[Metadata] Calling fetch tool with session: ${sessionId}, chatbot: ${chatbotId}`);
+              const result = await fetchTool({ session_id: sessionId, chatbot_id: chatbotId }, transcriptItems);
+              console.log("[Metadata] fetchOrgMetadata result:", result);
+              
+              if (result && !result.error) {
+                  // Update agent metadata state, ensuring session_id and chatbot_id are preserved/set
+                  setAgentMetadata(prev => ({ ...(prev || {}), ...result, session_id: sessionId, chatbot_id: chatbotId })); 
+                  addTranscriptMessage(uuidv4(), 'system', 'Agent context updated.');
+              } else {
+                   addTranscriptMessage(uuidv4(), 'system', `Error fetching agent context: ${result?.error || 'Unknown error'}`);
+                   // Ensure metadata has session/chatbot ID even if fetch fails
+                   setAgentMetadata(prev => ({ ...(prev || {}), session_id: sessionId, chatbot_id: chatbotId }));
+              }
+          } catch (error: any) {
+              console.error("[Metadata] Error executing fetchOrgMetadata:", error);
+               addTranscriptMessage(uuidv4(), 'system', `Error fetching agent context: ${error.message}`);
+               // Ensure metadata has session/chatbot ID on exception
+                const sessionId = agentMetadata?.session_id || uuidv4();
+                setAgentMetadata(prev => ({ ...(prev || {}), session_id: sessionId, chatbot_id: chatbotId }));
+          }
+      } else {
+          console.warn("[Metadata] No agent found with fetchOrgMetadata tool.");
+           addTranscriptMessage(uuidv4(), 'system', 'Agent configuration error: Metadata fetch tool missing.');
+      }
+  }, [selectedAgentConfigSet, chatbotId, agentMetadata?.session_id, addTranscriptMessage, transcriptItems]); // Add transcriptItems dependency
+
+  // --- Session Update Logic --- 
+   const updateSession = useCallback(async (shouldTriggerResponse: boolean = false) => {
+       if (sessionStatus !== 'CONNECTED' || !selectedAgentConfigSet || !dcRef.current) {
+           console.log("[Update Session] Cannot update, not connected or config missing.");
+           return;
+       }
+       
+       const currentAgent = selectedAgentConfigSet.find(a => a.name === selectedAgentName);
+       if (!currentAgent) {
+           console.error(`[Update Session] Agent config not found for: ${selectedAgentName}`);
+           return;
+       }
+       
+       // Ensure agent metadata state is merged into the agent config before sending
+       if (agentMetadata) {
+            currentAgent.metadata = { ...(currentAgent.metadata || {}), ...agentMetadata };
+       } else {
+            // If agentMetadata is still null, ensure chatbotId is present
+             currentAgent.metadata = { ...(currentAgent.metadata || {}), chatbot_id: chatbotId, session_id: uuidv4() };
+             console.warn("[Update Session] agentMetadata state was null, initializing from props/new session.")
+       }
+
+       console.log(`[Update Session] Updating server session for agent: ${selectedAgentName}`);
+
+       // Prepare instructions, potentially injecting metadata dynamically
+       let instructions = currentAgent.instructions;
+       // Check if getInstructions function exists (copied from realEstateAgent.ts setup)
+       if (currentAgent.name === 'realEstate' && typeof (window as any).getInstructions === 'function') {
+            try {
+                instructions = (window as any).getInstructions(currentAgent.metadata);
+                console.log("[Update Session] Dynamically generated instructions applied for realEstate agent.");
+            } catch (e) {
+                 console.error("[Update Session] Error running getInstructions:", e);
+            }
+       } else {
+            // Basic interpolation for other agents if needed
+             if (agentMetadata?.language) {
+                 instructions = instructions.replace(/\$\{metadata\?.language \|\| "English"\}/g, agentMetadata.language);
+             }
+       }
+
+       const languageCode = "en"; // TODO: Make language selectable if needed
+
+       // Configure turn detection (disable for text-only initially)
+       const turnDetection = null; // PTT not active
+
+       const sessionUpdateEvent = {
+         type: "session.update",
+         session: {
+           modalities: ["text"], // Start with text only
+           instructions: instructions,
+          // voice: "coral", // Add voice if needed
+           input_audio_format: "pcm16",
+           output_audio_format: "pcm16",
+           input_audio_transcription: {
+             model: "whisper-1",
+             language: languageCode,
+           },
+           turn_detection: turnDetection,
+           tools: currentAgent.tools || [],
+           metadata: currentAgent.metadata, // Send the merged metadata
+         },
+       };
+
+       sendClientEvent(sessionUpdateEvent, `(agent: ${selectedAgentName})`);
+
+       if (shouldTriggerResponse) {
+            console.log("[Update Session] Triggering initial response.");
+            // Send a simple trigger, agent instructions should handle initial greeting
+             sendClientEvent({ type: "response.create" }, "(trigger initial response)");
+           // Example: send simulated message if needed
+           // sendClientEvent({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text: "Hi" }] } }, "(simulated hi)");
+           // sendClientEvent({ type: "response.create" });
+       }
+   }, [sessionStatus, selectedAgentConfigSet, selectedAgentName, agentMetadata, chatbotId, sendClientEvent]);
+
+  // --- Connection Management --- 
+  const connectToRealtime = useCallback(async () => {
+    if (sessionStatus !== "DISCONNECTED") return;
+    setSessionStatus("CONNECTING");
+    setTranscriptItems([]); // Clear transcript on new connection
+    addTranscriptMessage(uuidv4(), 'system', 'Connecting...');
+
+    try {
+      console.log("Fetching ephemeral key from /api/session...");
+      const tokenResponse = await fetch("/api/session", { method: "POST" });
+      const data = await tokenResponse.json();
+
+      if (!tokenResponse.ok || !data.client_secret) {
+        console.error("Failed to get session token:", data);
+         addTranscriptMessage(uuidv4(), 'system', `Connection failed: ${data.error || 'Could not get session token'}`);
+        setSessionStatus("DISCONNECTED");
+        return;
+      }
+
+      const EPHEMERAL_KEY = data.client_secret;
+      console.log("Ephemeral key received.");
+
+      // Create audio element if it doesn't exist
+      if (!audioElementRef.current) {
+        audioElementRef.current = document.createElement("audio");
+        audioElementRef.current.autoplay = true;
+        // Optionally append to body for debugging, but should work hidden
+        // document.body.appendChild(audioElementRef.current);
+      }
+
+      console.log("Creating Realtime Connection...");
+      const { pc, dc } = await createRealtimeConnection(
+        EPHEMERAL_KEY,
+        audioElementRef
+      );
+      pcRef.current = pc;
+      dcRef.current = dc;
+
+      // --- Setup Data Channel Listeners ---
+      dc.addEventListener("open", () => {
+        console.log("Data Channel Opened");
+         addTranscriptMessage(uuidv4(), 'system', 'Connection established.');
+        // Metadata fetch and session update will be triggered by useEffect watching sessionStatus
+      });
+
+      dc.addEventListener("close", () => {
+        console.log("Data Channel Closed");
+         addTranscriptMessage(uuidv4(), 'system', 'Connection closed.');
+        setSessionStatus("DISCONNECTED");
+        // Clean up refs
+        pcRef.current = null;
+        dcRef.current = null;
+      });
+
+      dc.addEventListener("error", (err: any) => {
+        console.error("Data Channel Error:", err);
+         addTranscriptMessage(uuidv4(), 'system', `Connection error: ${err?.message || 'Unknown DC error'}`);
+        setSessionStatus("DISCONNECTED");
+      });
+
+      dc.addEventListener("message", (e: MessageEvent) => {
+          try {
+              const serverEvent: ServerEvent = JSON.parse(e.data);
+              handleServerEventRef.current(serverEvent); // Call the handler from the hook
+          } catch (error) {
+               console.error("Error parsing server event:", error, e.data);
+          }
+      });
+
+    // Note: setSessionStatus("CONNECTED") is handled by the session.created event via the hook
+
+    } catch (err: any) {
+      console.error("Error connecting to realtime:", err);
+       addTranscriptMessage(uuidv4(), 'system', `Connection failed: ${err.message}`);
+      setSessionStatus("DISCONNECTED");
+    }
+  }, [sessionStatus, addTranscriptMessage, handleServerEventRef]); // Dependencies
+
+  const disconnectFromRealtime = useCallback(() => {
+    if (!pcRef.current) return;
+    console.log("[Disconnect] Cleaning up WebRTC connection");
+    addTranscriptMessage(uuidv4(), 'system', 'Disconnecting...');
+
+    try {
+      pcRef.current.getSenders().forEach((sender) => {
+        sender.track?.stop();
+      });
+      pcRef.current.close();
+    } catch (error) {
+      console.error("[Disconnect] Error closing peer connection:", error);
+    }
+
+    // dcRef listener for 'close' should handle setting status and clearing refs
+     if (dcRef.current && dcRef.current.readyState === 'open') {
+         dcRef.current.close();
+     } else {
+        // If DC wasn't open or already closed, manually update state
+         setSessionStatus("DISCONNECTED");
+         pcRef.current = null;
+         dcRef.current = null;
+     }
+     setAgentMetadata(null); // Clear metadata on disconnect
+     // Don't clear transcript immediately, let user see history
+
+  }, [addTranscriptMessage]); // Dependencies
+
+  // --- Effects --- 
+
+  // Effect to initialize agentMetadata when chatbotId is first available
+  useEffect(() => {
+      if (chatbotId && !agentMetadata) { // Only run if chatbotId is present and metadata is not yet set
+          console.log(`[Effect] Initializing agentMetadata with chatbotId: ${chatbotId}`);
+          setAgentMetadata({ 
+              chatbot_id: chatbotId, 
+              session_id: uuidv4() // Generate a new session ID
+          });
+      }
+  }, [chatbotId]); // Rerun only if chatbotId changes (should be stable after load)
+
+  // Effect to fetch metadata and update session when connected or agent changes
+  useEffect(() => {
+      if (sessionStatus === 'CONNECTED' && selectedAgentConfigSet && agentMetadata) { // Ensure metadata is set
+          console.log("[Effect] Connected or agent changed, fetching metadata and updating session.");
+          // Fetch metadata first (which uses agentMetadata.session_id)
+          fetchOrgMetadata().then(() => {
+              // Then update the session (which uses the potentially updated agentMetadata)
+              updateSession(true); // Trigger initial response after connect/agent switch
+          });
+      }
+  }, [sessionStatus, selectedAgentName, agentMetadata, fetchOrgMetadata, updateSession, selectedAgentConfigSet]); // Add agentMetadata dependency
+
+  // Effect for cleanup on unmount
+  useEffect(() => {
+    return () => {
+      console.log("[Cleanup] Component unmounting, disconnecting...");
+      disconnectFromRealtime();
+      // Clean up audio element if needed
+       if (audioElementRef.current) {
+           audioElementRef.current.srcObject = null;
+           // Optional: remove from DOM if appended
+           // audioElementRef.current.remove(); 
+       }
+    };
+  }, [disconnectFromRealtime]);
+
+   // Effect to scroll transcript to bottom
+   useEffect(() => {
+       transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
+   }, [transcriptItems]);
+
+  // --- UI Handlers --- 
   const toggleInput = () => {
     setInputVisible(!inputVisible)
     if (!inputVisible) {
@@ -99,16 +441,43 @@ export default function RealEstateAgent() {
     }
   }
 
+  // Placeholder Mic Toggle
   const toggleMic = () => {
     setMicMuted(!micMuted)
+    // TODO: Add PTT logic here if needed, calling sendClientEvent
+     addTranscriptMessage(uuidv4(), 'system', 'Microphone control not fully implemented yet.');
   }
 
-  const handleSend = () => {
-    if (inputValue.trim()) {
-      setShowProperties(true)
-      setInputValue("")
-    }
-  }
+  // Updated Send Handler
+  const handleSend = useCallback(() => {
+    const textToSend = inputValue.trim();
+    if (!textToSend || sessionStatus !== 'CONNECTED' || !dcRef.current) return;
+
+    console.log(`[Send Text] Sending: "${textToSend}"`);
+    const userMessageId = uuidv4();
+
+    // Add user message optimistically to transcript
+     addTranscriptMessage(userMessageId, 'user', textToSend);
+
+    // Send message event to server
+    sendClientEvent(
+      {
+        type: "conversation.item.create",
+        item: {
+          id: userMessageId,
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: textToSend }],
+        },
+      },
+      "(user text message)"
+    );
+    setInputValue("");
+
+    // Trigger agent response
+    sendClientEvent({ type: "response.create" }, "(trigger response)");
+
+  }, [inputValue, sessionStatus, sendClientEvent, addTranscriptMessage]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") {
@@ -116,26 +485,44 @@ export default function RealEstateAgent() {
     }
   }
 
+  // Call Button Handler
+  const handleCallButtonClick = () => {
+      if (sessionStatus === 'DISCONNECTED') {
+          // Ensure chatbotId is available before connecting
+           if (chatbotId) {
+               connectToRealtime();
+           } else {
+               addTranscriptMessage(uuidv4(), 'system', 'Cannot connect: Chatbot ID is missing.');
+               console.error("Attempted to connect without a chatbotId.");
+           }
+      } else {
+          disconnectFromRealtime();
+      }
+  };
+
+  // Existing UI handlers (keep as is)
   const handleScheduleVisit = (property: PropertyProps) => {
     setShowProperties(false)
     setSelectedProperty(property)
     setAppointment(true)
     setSelectedTime(null) // Reset time selection
     setIsConfirmed(false) // Reset confirmation
+    // TODO: Potentially trigger agent interaction here if needed
   }
-
   const handleTimeClick = (time: string) => {
     setSelectedTime(time)
   }
-
   const handleCloseConfirmation = () => {
     setSelectedTime(null)
+    // Maybe reset appointment state?
+    // setAppointment(false);
+    // setSelectedProperty(null);
   }
-
   const handleConfirmBooking = () => {
     setIsConfirmed(true)
+    // TODO: Potentially trigger agent interaction here to confirm
+     // Example: addTranscriptMessage(uuidv4(), 'user', `Confirm booking for ${selectedProperty?.name} on ${selectedDay} at ${selectedTime}.`); sendClientEvent({type: "response.create"});
   }
-
   const handleReset = () => {
     setAppointment(false)
     setSelectedProperty(null)
@@ -143,13 +530,25 @@ export default function RealEstateAgent() {
     setIsConfirmed(false)
   }
 
+  // --- Render --- 
+  // Placeholder: Fetch properties (replace with actual logic or agent interaction)
+   const properties: PropertyProps[] = [
+         {
+             name: "Emaar Beachfront", price: "AED 5M", area: "1,200 sqft",
+             location: { city: "Dubai", mapUrl: "#" }, mainImage: "/property1.jpg",
+             galleryImages: [{ url: "/property1.jpg", alt: "Living room" }],
+             units: [{ type: "2BR" }, { type: "3BR" }], amenities: [{ name: "Pool" }, { name: "Gym" }]
+         },
+         // Add more properties if needed
+     ];
+
   return (
     <div
-      className="relative bg-blue-900 rounded-3xl overflow-hidden text-white"
+      className="relative bg-blue-900 rounded-3xl overflow-hidden text-white flex flex-col"
       style={{ width: "329px", height: "611px" }}
     >
-      {/* Header */}
-      <div className="flex items-center p-4">
+      {/* Header - Keep as is */}
+      <div className="flex items-center p-4 border-b border-blue-800 flex-shrink-0">
         <div className="flex items-center">
           <div className="bg-white rounded-full p-1 mr-2">
             <div className="text-blue-800 w-8 h-8 flex items-center justify-center">
@@ -233,16 +632,45 @@ export default function RealEstateAgent() {
           </div>
           <span className="font-medium">Real Estate AI Agent</span>
         </div>
-        <button className="ml-auto">
+        <button className="ml-auto p-2 hover:bg-blue-800 rounded-full">
           <X size={20} />
         </button>
       </div>
-      <div className="border-1 h-10 rounded-3xl w-72 p-4 justify-evenly ml-5">
+      
+      {/* Voice Waveform (conditional?) */}
+      {sessionStatus === 'CONNECTED' && (
+           <div className="border-1 h-10 rounded-3xl w-72 p-4 justify-evenly ml-5 my-2 flex-shrink-0">
        <VoiceWaveform/>
        </div>
-      {/* Content Area */}
+      )}
+
+      {/* --- Main Content Area --- */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-3 scrollbar-thin scrollbar-thumb-blue-700 scrollbar-track-blue-800">
+        {/* Render Transcript Items */}
+        {transcriptItems.map((item) => (
+           item.type === 'MESSAGE' && (
+               <div key={item.itemId} className={`flex ${item.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                   <div 
+                       className={`max-w-[80%] p-3 rounded-2xl text-sm ${ 
+                           item.role === 'user' 
+                           ? 'bg-blue-600 rounded-br-none' 
+                           : 'bg-gray-600 rounded-bl-none'
+                       } ${item.status === 'IN_PROGRESS' && item.role ==='assistant' ? 'opacity-80' : ''}`}
+                   >
+                       {item.text || (item.role === 'assistant' && item.status === 'IN_PROGRESS' ? '...' : '')}
+                        {/* Optionally show status indicator */} 
+                        {/* {item.status === 'IN_PROGRESS' && <Loader size={10} className="inline-block ml-1 animate-spin" />} */}
+                   </div>
+               </div>
+           )
+        ))}
+         {/* Element to scroll to */} 
+         <div ref={transcriptEndRef} />
+      </div>
+
+      {/* Existing UI for properties/appointments (conditional rendering) */}
         {appointment && selectedProperty && (
-      <div className="h-[400px]">
+            <div className="absolute inset-0 bg-blue-900 bg-opacity-90 flex items-center justify-center z-10 p-4">
            <PropertyConfirmation
            onClose={handleCloseConfirmation}
            selectedTime={selectedTime || ""}
@@ -252,44 +680,33 @@ export default function RealEstateAgent() {
          />
         </div>
         )}
-
-        {/* {!showProperties && (
-          <div className="text-center">
-            <div className="flex justify-center space-x-1">
-              {Array(15)
-                .fill(0)
-                .map((_, i) => (
-                  <div key={i} className="w-1 h-1 bg-white rounded-full opacity-50"></div>
-                ))}
+        {showProperties && (
+            <div className="absolute inset-0 bg-blue-900 bg-opacity-90 flex items-center justify-center z-10 p-4 overflow-auto">
+                 <button onClick={() => setShowProperties(false)} className="absolute top-4 right-4 p-2 bg-red-500 rounded-full z-20"><X size={18}/></button>
+                 <PropertyList properties={properties} onScheduleVisit={handleScheduleVisit}/>
             </div>
-          </div>
-        )} */}
-
-        <AnimatePresence mode="wait">
-          {showProperties && (
-        <div className="flex-1 flex flex-col items-center justify-center h-[350px] relative mt-4">
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -20 }}
-              className="absolute inset-0 overflow-auto px-4 py-2"
-            >
-              <PropertyList properties={properties} onScheduleVisit={handleScheduleVisit}/>
-            </motion.div>
+        )}
+        {isConfirmed && selectedProperty && (
+             <div className="absolute inset-0 bg-blue-900 bg-opacity-95 flex items-center justify-center z-10 p-4">
+                  <AppointmentConfirmed 
+                    onClose={handleReset} 
+                    property={selectedProperty}
+                    date={selectedDay} // Pass selected date/time
+                    time={selectedTime || ""}
+                />
           </div>
           )}
-        </AnimatePresence>
 
-      {/* Bottom Controls */}
-      <div className="absolute bottom-0 left-0 right-0">
+      {/* --- Bottom Controls Area --- */}
+      <div className="mt-auto flex-shrink-0 z-20">
         <AnimatePresence>
           {inputVisible && (
-            <motion.div
+            <motion.div /* Keep animation as is */
               initial={{ y: 60 }}
               animate={{ y: 0 }}
               exit={{ y: 60 }}
               transition={{ type: "spring", stiffness: 300, damping: 30 }}
-              className="rounded-xl w-[320px] -mb-1 ml-1 h-[48px] shadow-lg bg-[#47679D]" // Added shadow for glass effect
+              className="rounded-xl w-[320px] -mb-1 ml-1 h-[48px] shadow-lg bg-[#47679D]"
             >
               <div className="flex items-center justify-between w-full px-4 py-2 rounded-lg">
                 <input
@@ -298,10 +715,15 @@ export default function RealEstateAgent() {
                   value={inputValue}
                   onChange={(e) => setInputValue(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  placeholder="Show me some properties in Dubai"
-                  className="flex-1 mt-1 bg-transparent outline-none text-white placeholder:text-white  placeholder:opacity-50"
+                  placeholder={sessionStatus === 'CONNECTED' ? "Type your message..." : "Connect call to type"}
+                  className="flex-1 mt-1 bg-transparent outline-none text-white placeholder:text-white placeholder:opacity-50 text-sm"
+                  disabled={sessionStatus !== 'CONNECTED'}
                 />
-                <button onClick={handleSend} className="ml-2 mt-2 text-white">
+                <button 
+                    onClick={handleSend} 
+                    className="ml-2 mt-1 text-white disabled:opacity-50"
+                    disabled={sessionStatus !== 'CONNECTED' || !inputValue.trim()}
+                 >
                   <Send size={18} />
                 </button>
               </div>
@@ -309,30 +731,41 @@ export default function RealEstateAgent() {
           )}
         </AnimatePresence>
 
-        <div className="flex justify-between items-center p-3">
-          <button onClick={toggleInput} className="bg-[#47679D] p-3 rounded-full">
+        {/* Button Bar */}
+        <div className="flex justify-between items-center p-3 bg-blue-900">
+          <button onClick={toggleInput} className="bg-[#47679D] p-3 rounded-full hover:bg-blue-600 transition-colors">
             <MessageSquare size={20} />
           </button>
 
+           {/* Placeholder dots - keep as is */}
           <div className="flex justify-center space-x-1">
-            {Array(15)
-              .fill(0)
-              .map((_, i) => (
-                <div key={i} className="w-1 h-1 bg-white rounded-full opacity-50"></div>
-              ))}
+             {/* ... (keep existing dots) ... */} 
+               {Array(15).fill(0).map((_, i) => (<div key={i} className="w-1 h-1 bg-white rounded-full opacity-50"></div>))}
           </div>
 
-          <button onClick={toggleMic} className="bg-[#47679D] p-3 rounded-full">
+          <button 
+              onClick={toggleMic} 
+              className={`p-3 rounded-full transition-colors ${micMuted ? 'bg-gray-600' : 'bg-[#47679D] hover:bg-blue-600'}`}
+              disabled={sessionStatus !== 'CONNECTED'} // Disable mic if not connected
+           >
             {micMuted ? <MicOff size={20} /> : <Mic size={20} />}
           </button>
 
-          <button className="bg-red-500 p-3 rounded-full">
-            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 9" fill="none">
-              <path d="M3.4 8.4L1.1 6.15C0.900003 5.95 0.800003 5.71667 0.800003 5.45C0.800003 5.18333 0.900003 4.95 1.1 4.75C2.56667 3.16667 4.25834 1.97933 6.175 1.188C8.09167 0.396667 10.0333 0.000667507 12 8.40337e-07C13.9667 -0.000665826 15.9043 0.395334 17.813 1.188C19.7217 1.98067 21.4173 3.168 22.9 4.75C23.1 4.95 23.2 5.18333 23.2 5.45C23.2 5.71667 23.1 5.95 22.9 6.15L20.6 8.4C20.4167 8.58333 20.204 8.68334 19.962 8.7C19.72 8.71667 19.4993 8.65 19.3 8.5L16.4 6.3C16.2667 6.2 16.1667 6.08333 16.1 5.95C16.0333 5.81667 16 5.66667 16 5.5V2.65C15.3667 2.45 14.7167 2.29167 14.05 2.175C13.3833 2.05833 12.7 2 12 2C11.3 2 10.6167 2.05833 9.95 2.175C9.28334 2.29167 8.63334 2.45 8 2.65V5.5C8 5.66667 7.96667 5.81667 7.9 5.95C7.83334 6.08333 7.73334 6.2 7.6 6.3L4.7 8.5C4.5 8.65 4.279 8.71667 4.037 8.7C3.795 8.68334 3.58267 8.58333 3.4 8.4ZM6 3.45C5.51667 3.7 5.05 3.98767 4.6 4.313C4.15 4.63833 3.68334 5.00067 3.2 5.4L4.2 6.4L6 5V3.45ZM18 3.5V5L19.8 6.4L20.8 5.45C20.3167 5.01667 19.85 4.64167 19.4 4.325C18.95 4.00833 18.4833 3.73333 18 3.5Z" fill="#F9FAFB" />
-            </svg>
+          {/* Call Button */}
+          <button 
+              onClick={handleCallButtonClick}
+              className={`${sessionStatus === 'CONNECTED' ? 'bg-red-500 hover:bg-red-600' : 'bg-green-500 hover:bg-green-600'} p-3 rounded-full transition-colors disabled:opacity-70`}
+              disabled={sessionStatus === 'CONNECTING' || (!chatbotId && sessionStatus === 'DISCONNECTED')} // Disable connect if no chatbotId
+           >
+             {sessionStatus === 'CONNECTING' ? <Loader size={18} className="animate-spin"/> : 
+              sessionStatus === 'CONNECTED' ? <PhoneOff size={18} /> : 
+              <Phone size={18} />
+             }
           </button>
         </div>
       </div>
+      {/* Hidden Audio Element */}
+      <audio ref={audioElementRef} playsInline />
     </div>
   )
 }
