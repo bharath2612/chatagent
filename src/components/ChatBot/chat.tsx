@@ -351,10 +351,14 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       // Create audio element if it doesn't exist
       if (!audioElementRef.current) {
         audioElementRef.current = document.createElement("audio");
+        // IMPORTANT: Set these properties for audio to work properly
         audioElementRef.current.autoplay = true;
-        // For debugging, we can add to DOM to see controls
-        // document.body.appendChild(audioElementRef.current);
-        // audioElementRef.current.controls = true;
+        // Use correct TypeScript attribute name
+        (audioElementRef.current as any).playsInline = true; // Type assertion to bypass TypeScript error
+        // For debugging purposes, we can add it to the DOM with controls
+        document.body.appendChild(audioElementRef.current);
+        audioElementRef.current.style.display = 'none'; // Hide it but keep in DOM
+        // audioElementRef.current.controls = true; // Enable for debugging
       }
 
       console.log("Creating Realtime Connection...");
@@ -368,8 +372,8 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       // --- Setup Data Channel Listeners ---
       dc.addEventListener("open", () => {
         console.log("Data Channel Opened");
-         addTranscriptMessage(generateSafeId(), 'system', 'Connection established.');
-        // Metadata fetch and session update will be triggered by useEffect watching sessionStatus
+        // Do NOT add a "Connection established" message here
+        // Let the server event handler do it to avoid duplication
       });
 
       dc.addEventListener("close", () => {
@@ -414,6 +418,18 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
     initialSessionSetupDoneRef.current = false; 
 
     try {
+      // Properly cleanup audio element
+      if (audioElementRef.current) {
+        audioElementRef.current.srcObject = null;
+        audioElementRef.current.pause();
+        // Remove from DOM if it was added
+        if (audioElementRef.current.parentNode) {
+          audioElementRef.current.parentNode.removeChild(audioElementRef.current);
+        }
+        audioElementRef.current = null;
+      }
+
+      // Cleanup WebRTC
       pcRef.current.getSenders().forEach((sender) => {
         sender.track?.stop();
       });

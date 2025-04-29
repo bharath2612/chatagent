@@ -243,6 +243,32 @@ export function useHandleServerEvent({
         break;
       }
 
+      case "session.updated": {
+        // Session was updated successfully, no action needed
+        console.log(`[Server Event] Session updated successfully`);
+        break;
+      }
+
+      case "input_audio_buffer.cleared": {
+        // Audio buffer cleared, no action needed
+        console.log(`[Server Event] Input audio buffer cleared`);
+        break;
+      }
+
+      case "response.function_call_arguments.delta":
+      case "response.function_call_arguments.done": {
+        // Function call arguments streaming events, can be ignored for now
+        // These are used for streaming updates during function call argument formation
+        console.log(`[Server Event] Function call arguments ${serverEvent.type === 'response.function_call_arguments.done' ? 'completed' : 'updated'}`);
+        break;
+      }
+
+      case "output_audio_buffer.stopped": {
+        // Audio playback stopped
+        console.log(`[Server Event] Audio playback stopped`);
+        break;
+      }
+
       case "conversation.item.created": {
         let text =
           serverEvent.item?.content?.[0]?.text ??
