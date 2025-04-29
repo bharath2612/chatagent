@@ -3,6 +3,12 @@
 import { ServerEvent, SessionStatus, AgentConfig, TranscriptItem } from "@/types/types"; // Adjusted import path, added TranscriptItem
 import { useRef, useEffect } from "react";
 
+// Helper function to create safe IDs (must be 32 chars or less)
+const generateSafeId = () => {
+    // Remove hyphens and truncate to 32 chars
+    return Date.now().toString(36) + Math.random().toString(36).substring(2, 10);
+};
+
 // Define types for transcript management functions
 type AddTranscriptMessageType = (itemId: string, role: "user" | "assistant" | "system", text: string) => void;
 type UpdateTranscriptMessageType = (itemId: string, textDelta: string, isDelta: boolean) => void;
@@ -231,8 +237,8 @@ export function useHandleServerEvent({
       case "session.created": {
         if (serverEvent.session?.id) {
           setSessionStatus("CONNECTED");
-          // Optionally log session ID or add a system message to transcript
-          // addTranscriptMessage(Date.now().toString(), 'system', `Session Connected: ${serverEvent.session.id}`);
+          // Match old code by adding a system message with connection info
+          addTranscriptMessage(generateSafeId(), 'system', 'Connection established.');
         }
         break;
       }
@@ -350,13 +356,59 @@ export function useHandleServerEvent({
         break;
       }
 
+      // Handle the previously unhandled event types
+      case "response.created":
+      case "rate_limits.updated":
+        // These events can be logged but don't require specific handling
+        console.log(`[Server Event] ${serverEvent.type} received and acknowledged`);
+        break;
+        
+      case "response.output_item.added":
+        // This event signals a new output item (like text or function call) is being added to the response
+        console.log(`[Server Event] Output item added, index: ${(serverEvent as any).output_index}`);
+        break;
+
+      case "response.content_part.added":
+      case "response.content_part.done":
+        // These events relate to content parts within output items
+        if ((serverEvent as any).item_id) {
+          console.log(`[Server Event] Content part event for item: ${(serverEvent as any).item_id}`);
+        }
+        break;
+        
+      case "output_audio_buffer.started":
+        // Audio playback is starting
+        console.log(`[Server Event] Audio buffer started for response: ${(serverEvent as any).response_id}`);
+        break;
+        
+      case "response.audio.done":
+      case "response.audio_transcript.done":
+        // Audio playback and transcript are complete
+        console.log(`[Server Event] Audio/transcript complete for item: ${(serverEvent as any).item_id}`);
+        break;
+
       // Handle potential errors from the session
        case "session.error": {
-           console.error("[Session Error]", serverEvent);
+           console.error("[Session Error Event] Received session.error:", serverEvent);
            // Access error details correctly based on ServerEvent type
            const errorMessage = serverEvent.response?.status_details?.error?.message || 'Unknown session error';
-           addTranscriptMessage(Date.now().toString(), 'system', `Session Error: ${errorMessage}`);
+           addTranscriptMessage(generateSafeId(), 'system', `Session Error: ${errorMessage}`);
            setSessionStatus("DISCONNECTED"); // Disconnect on session error
+           break;
+       }
+
+       // Add specific handling for the top-level 'error' event type
+       case "error": { 
+           console.error("[Top-Level Error Event] Received error event:", serverEvent);
+           // Access error details - structure might vary, logging the whole event
+           const errorDetails = (serverEvent as any).error; // Use type assertion as structure is unknown
+           const errorMessage = errorDetails?.message || JSON.stringify(serverEvent) || 'Unknown error structure from server';
+           const errorCode = errorDetails?.code || 'N/A';
+           console.error(`[Top-Level Error Event] Code: ${errorCode}, Message: ${errorMessage}`, errorDetails, serverEvent);
+           // Add error message to transcript
+           addTranscriptMessage(generateSafeId(), 'system', `Server Error (${errorCode}): ${errorMessage}`);
+           // Decide if we should disconnect based on this error type - maybe not always?
+           // setSessionStatus("DISCONNECTED"); 
            break;
        }
 

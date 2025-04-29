@@ -89,9 +89,18 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
   const dcRef = useRef<RTCDataChannel | null>(null);
   const audioElementRef = useRef<HTMLAudioElement | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement | null>(null); // Ref to scroll transcript
+  const initialSessionSetupDoneRef = useRef<boolean>(false); // Ref to track initial setup
 
-  // --- Transcript Management --- 
+  // Helper to generate safe IDs (32 chars max)
+  const generateSafeId = () => uuidv4().replace(/-/g, '').slice(0, 32);
+
+  // Update transcript management functions to use safe IDs
   const addTranscriptMessage = useCallback((itemId: string, role: "user" | "assistant" | "system", text: string) => {
+      // If a new ID is being generated (like for system messages), make sure it's safe
+      if (itemId === 'new' || itemId.length > 32) {
+          itemId = generateSafeId();
+      }
+      
       setTranscriptItems((prev) => [
           ...prev,
           {
@@ -100,7 +109,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
               role,
               text,
               createdAtMs: Date.now(),
-              status: role === 'assistant' ? 'IN_PROGRESS' : 'DONE', // Assistant messages start in progress
+              status: role === 'assistant' ? 'IN_PROGRESS' : 'DONE',
           },
       ]);
   }, []);
@@ -142,7 +151,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
         eventObj
       );
       // Optionally add an error message to the transcript
-       addTranscriptMessage(uuidv4(), 'system', `Error: Could not send message. Connection lost.`);
+       addTranscriptMessage(generateSafeId(), 'system', `Error: Could not send message. Connection lost.`);
        setSessionStatus("DISCONNECTED"); // Consider disconnecting if send fails
     }
   }, [addTranscriptMessage]); // Updated dependency
@@ -166,7 +175,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       // Use the chatbotId passed via props
       if (!selectedAgentConfigSet || !chatbotId) {
            console.warn("[Metadata] Agent config set or chatbotId missing.");
-           if (!chatbotId) addTranscriptMessage(uuidv4(), 'system', 'Configuration Error: Chatbot ID missing.');
+           if (!chatbotId) addTranscriptMessage(generateSafeId(), 'system', 'Configuration Error: Chatbot ID missing.');
            return;
       }
       console.log("[Metadata] Attempting to fetch org metadata...");
@@ -177,7 +186,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       if (fetchTool) {
           try {
               // Use the existing session ID from metadata state
-              const sessionId = agentMetadata?.session_id || uuidv4(); // Fallback if metadata not set yet
+              const sessionId = agentMetadata?.session_id || generateSafeId(); // Fallback if metadata not set yet
               
               console.log(`[Metadata] Calling fetch tool with session: ${sessionId}, chatbot: ${chatbotId}`);
               const result = await fetchTool({ session_id: sessionId, chatbot_id: chatbotId }, transcriptItems);
@@ -186,22 +195,22 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
               if (result && !result.error) {
                   // Update agent metadata state, ensuring session_id and chatbot_id are preserved/set
                   setAgentMetadata(prev => ({ ...(prev || {}), ...result, session_id: sessionId, chatbot_id: chatbotId })); 
-                  addTranscriptMessage(uuidv4(), 'system', 'Agent context updated.');
+                  addTranscriptMessage(generateSafeId(), 'system', 'Agent context updated.');
               } else {
-                   addTranscriptMessage(uuidv4(), 'system', `Error fetching agent context: ${result?.error || 'Unknown error'}`);
+                   addTranscriptMessage(generateSafeId(), 'system', `Error fetching agent context: ${result?.error || 'Unknown error'}`);
                    // Ensure metadata has session/chatbot ID even if fetch fails
                    setAgentMetadata(prev => ({ ...(prev || {}), session_id: sessionId, chatbot_id: chatbotId }));
               }
           } catch (error: any) {
               console.error("[Metadata] Error executing fetchOrgMetadata:", error);
-               addTranscriptMessage(uuidv4(), 'system', `Error fetching agent context: ${error.message}`);
+               addTranscriptMessage(generateSafeId(), 'system', `Error fetching agent context: ${error.message}`);
                // Ensure metadata has session/chatbot ID on exception
-                const sessionId = agentMetadata?.session_id || uuidv4();
+                const sessionId = agentMetadata?.session_id || generateSafeId();
                 setAgentMetadata(prev => ({ ...(prev || {}), session_id: sessionId, chatbot_id: chatbotId }));
           }
       } else {
           console.warn("[Metadata] No agent found with fetchOrgMetadata tool.");
-           addTranscriptMessage(uuidv4(), 'system', 'Agent configuration error: Metadata fetch tool missing.');
+           addTranscriptMessage(generateSafeId(), 'system', 'Agent configuration error: Metadata fetch tool missing.');
       }
   }, [selectedAgentConfigSet, chatbotId, agentMetadata?.session_id, addTranscriptMessage, transcriptItems]); // Add transcriptItems dependency
 
@@ -223,7 +232,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
             currentAgent.metadata = { ...(currentAgent.metadata || {}), ...agentMetadata };
        } else {
             // If agentMetadata is still null, ensure chatbotId is present
-             currentAgent.metadata = { ...(currentAgent.metadata || {}), chatbot_id: chatbotId, session_id: uuidv4() };
+             currentAgent.metadata = { ...(currentAgent.metadata || {}), chatbot_id: chatbotId, session_id: generateSafeId() };
              console.warn("[Update Session] agentMetadata state was null, initializing from props/new session.")
        }
 
@@ -248,67 +257,104 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
 
        const languageCode = "en"; // TODO: Make language selectable if needed
 
-       // Configure turn detection (disable for text-only initially)
-       const turnDetection = null; // PTT not active
+       // Configure turn detection (disable for now, like PTT active in old code)
+       const turnDetection = null; 
 
-       const sessionUpdateEvent = {
-         type: "session.update",
-         session: {
-           modalities: ["text"], // Start with text only
-           instructions: instructions,
-          // voice: "coral", // Add voice if needed
-           input_audio_format: "pcm16",
-           output_audio_format: "pcm16",
-           input_audio_transcription: {
-             model: "whisper-1",
-             language: languageCode,
-           },
-           turn_detection: turnDetection,
-           tools: currentAgent.tools || [],
-           metadata: currentAgent.metadata, // Send the merged metadata
-         },
-       };
+       // Clear any existing audio buffer before updating
+       sendClientEvent({ type: "input_audio_buffer.clear" }, "clear audio buffer on session update");
 
-       sendClientEvent(sessionUpdateEvent, `(agent: ${selectedAgentName})`);
+       // Prepare the session update payload - Mirroring oldCode/App.tsx structure
+       const sessionUpdatePayload = {
+            type: "session.update",
+            session: {
+                // Add fields from old code
+                modalities: ["text", "audio"], // Enable audio
+                instructions: instructions, // Use potentially updated instructions
+                voice: "coral", // Default voice (adjust if needed)
+                input_audio_format: "pcm16",
+                output_audio_format: "pcm16",
+                input_audio_transcription: {
+                    model: "whisper-1", // Default model (adjust if needed)
+                    language: languageCode,
+                },
+                turn_detection: turnDetection, // Default to null (no VAD)
+                tools: currentAgent.tools || [], // Include agent tools
 
+                // DO NOT explicitly send metadata object here
+                // Server should use session ID context
+            },
+        };
+
+       sendClientEvent(sessionUpdatePayload, `(agent: ${selectedAgentName})`);
+
+       // If shouldTriggerResponse is true, follow the old code's approach of sending a simulated message
        if (shouldTriggerResponse) {
-            console.log("[Update Session] Triggering initial response.");
-            // Send a simple trigger, agent instructions should handle initial greeting
-             sendClientEvent({ type: "response.create" }, "(trigger initial response)");
-           // Example: send simulated message if needed
-           // sendClientEvent({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text: "Hi" }] } }, "(simulated hi)");
-           // sendClientEvent({ type: "response.create" });
+           console.log("[Update Session] Triggering initial response with simulated 'hi' message");
+           sendSimulatedUserMessage("hi");
        }
-   }, [sessionStatus, selectedAgentConfigSet, selectedAgentName, agentMetadata, chatbotId, sendClientEvent]);
+   }, [sessionStatus, selectedAgentName, selectedAgentConfigSet, agentMetadata, chatbotId, sendClientEvent, addTranscriptMessage]); 
+
+   // Add the sendSimulatedUserMessage function to match old code
+   const sendSimulatedUserMessage = useCallback((text: string) => {
+       // Generate a truncated ID (32 chars max as required by API)
+       const id = generateSafeId();
+       
+       // DO NOT add simulated message to transcript (it shouldn't be visible)
+       // addTranscriptMessage(id, "user", text);
+
+       // Send the message event
+       sendClientEvent(
+           {
+               type: "conversation.item.create",
+               item: {
+                   id,
+                   type: "message",
+                   role: "user",
+                   content: [{ type: "input_text", text }],
+               },
+           },
+           "(simulated user text message)"
+       );
+
+       // After sending message, trigger response
+       sendClientEvent(
+           { type: "response.create" },
+           "(trigger response after simulated user message)"
+       );
+   }, [sendClientEvent]);
 
   // --- Connection Management --- 
   const connectToRealtime = useCallback(async () => {
     if (sessionStatus !== "DISCONNECTED") return;
     setSessionStatus("CONNECTING");
     setTranscriptItems([]); // Clear transcript on new connection
-    addTranscriptMessage(uuidv4(), 'system', 'Connecting...');
+    addTranscriptMessage(generateSafeId(), 'system', 'Connecting...');
 
     try {
       console.log("Fetching ephemeral key from /api/session...");
       const tokenResponse = await fetch("/api/session", { method: "POST" });
       const data = await tokenResponse.json();
 
-      if (!tokenResponse.ok || !data.client_secret) {
+      // Check for the nested .value property
+      if (!tokenResponse.ok || !data.client_secret?.value) { 
         console.error("Failed to get session token:", data);
-         addTranscriptMessage(uuidv4(), 'system', `Connection failed: ${data.error || 'Could not get session token'}`);
+         const errorMsg = data?.error || 'Could not get session token (missing client_secret.value)';
+         addTranscriptMessage(generateSafeId(), 'system', `Connection failed: ${errorMsg}`);
         setSessionStatus("DISCONNECTED");
         return;
       }
 
-      const EPHEMERAL_KEY = data.client_secret;
-      console.log("Ephemeral key received.");
+      // Extract the actual key string from .value
+      const EPHEMERAL_KEY = data.client_secret.value;
+      console.log("Ephemeral key value received."); // Updated log message
 
       // Create audio element if it doesn't exist
       if (!audioElementRef.current) {
         audioElementRef.current = document.createElement("audio");
         audioElementRef.current.autoplay = true;
-        // Optionally append to body for debugging, but should work hidden
+        // For debugging, we can add to DOM to see controls
         // document.body.appendChild(audioElementRef.current);
+        // audioElementRef.current.controls = true;
       }
 
       console.log("Creating Realtime Connection...");
@@ -322,13 +368,13 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       // --- Setup Data Channel Listeners ---
       dc.addEventListener("open", () => {
         console.log("Data Channel Opened");
-         addTranscriptMessage(uuidv4(), 'system', 'Connection established.');
+         addTranscriptMessage(generateSafeId(), 'system', 'Connection established.');
         // Metadata fetch and session update will be triggered by useEffect watching sessionStatus
       });
 
       dc.addEventListener("close", () => {
         console.log("Data Channel Closed");
-         addTranscriptMessage(uuidv4(), 'system', 'Connection closed.');
+         addTranscriptMessage(generateSafeId(), 'system', 'Connection closed.');
         setSessionStatus("DISCONNECTED");
         // Clean up refs
         pcRef.current = null;
@@ -337,7 +383,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
 
       dc.addEventListener("error", (err: any) => {
         console.error("Data Channel Error:", err);
-         addTranscriptMessage(uuidv4(), 'system', `Connection error: ${err?.message || 'Unknown DC error'}`);
+         addTranscriptMessage(generateSafeId(), 'system', `Connection error: ${err?.message || 'Unknown DC error'}`);
         setSessionStatus("DISCONNECTED");
       });
 
@@ -354,7 +400,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
 
     } catch (err: any) {
       console.error("Error connecting to realtime:", err);
-       addTranscriptMessage(uuidv4(), 'system', `Connection failed: ${err.message}`);
+       addTranscriptMessage(generateSafeId(), 'system', `Connection failed: ${err.message}`);
       setSessionStatus("DISCONNECTED");
     }
   }, [sessionStatus, addTranscriptMessage, handleServerEventRef]); // Dependencies
@@ -362,7 +408,10 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
   const disconnectFromRealtime = useCallback(() => {
     if (!pcRef.current) return;
     console.log("[Disconnect] Cleaning up WebRTC connection");
-    addTranscriptMessage(uuidv4(), 'system', 'Disconnecting...');
+    addTranscriptMessage(generateSafeId(), 'system', 'Disconnecting...');
+
+    // Reset the setup flag on disconnect
+    initialSessionSetupDoneRef.current = false; 
 
     try {
       pcRef.current.getSenders().forEach((sender) => {
@@ -395,22 +444,70 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
           console.log(`[Effect] Initializing agentMetadata with chatbotId: ${chatbotId}`);
           setAgentMetadata({ 
               chatbot_id: chatbotId, 
-              session_id: uuidv4() // Generate a new session ID
+              session_id: generateSafeId() // Generate a new session ID
           });
       }
   }, [chatbotId]); // Rerun only if chatbotId changes (should be stable after load)
 
   // Effect to fetch metadata and update session when connected or agent changes
   useEffect(() => {
-      if (sessionStatus === 'CONNECTED' && selectedAgentConfigSet && agentMetadata) { // Ensure metadata is set
-          console.log("[Effect] Connected or agent changed, fetching metadata and updating session.");
-          // Fetch metadata first (which uses agentMetadata.session_id)
-          fetchOrgMetadata().then(() => {
-              // Then update the session (which uses the potentially updated agentMetadata)
-              updateSession(true); // Trigger initial response after connect/agent switch
-          });
+      // Goal: Run fetchOrgMetadata and updateSession(true) *once* per connection/agent setup.
+
+      // Condition: Connected, have config, have basic metadata (chatbotId/session_id)
+      if (sessionStatus === 'CONNECTED' && selectedAgentConfigSet && agentMetadata) { 
+          // Check if setup has already been done for this specific agent and connection instance
+          if (!initialSessionSetupDoneRef.current) {
+              console.log("[Effect] Connected & Setup Needed: Fetching metadata and updating session.");
+              
+              // Mark setup as *starting* immediately to prevent race conditions within this effect run
+              // We'll set it back to false if fetch/update fails.
+              initialSessionSetupDoneRef.current = true; 
+              
+              fetchOrgMetadata().then(() => {
+                  // Check if still connected *after* async fetch completes
+                  if (sessionStatus === 'CONNECTED') { 
+                       // Now update the session and trigger the initial response
+                       updateSession(true); 
+                       // Mark setup truly complete *after* successful updateSession
+                       // initialSessionSetupDoneRef.current = true; // Already set above
+                       console.log("[Effect] Initial session setup complete.");
+                  } else {
+                       console.log("[Effect] Session disconnected after metadata fetch, aborting initial session update.");
+                       initialSessionSetupDoneRef.current = false; // Reset flag if disconnected during fetch
+                  }
+              }).catch(error => {
+                   console.error("[Effect] Error during initial fetchOrgMetadata or updateSession in effect:", error);
+                   addTranscriptMessage(generateSafeId(), 'system', 'Error during initial setup.');
+                   initialSessionSetupDoneRef.current = false; // Reset flag on error to allow retry if appropriate
+              });
+          } else {
+               // This log confirms the ref is preventing re-runs for the *same* agent/connection.
+               console.log("[Effect] Connected, but initial session setup already marked as done/in-progress.");
+          }
+      } else {
+          // Log why the effect isn't running the setup
+          if (sessionStatus !== 'CONNECTED') console.log("[Effect] Waiting for connection...");
+          // else if (!selectedAgentConfigSet) console.log("[Effect] Waiting for agent config set...");
+          // else if (!agentMetadata) console.log("[Effect] Waiting for initial agent metadata (chatbotId/session_id)...");
       }
-  }, [sessionStatus, selectedAgentName, agentMetadata, fetchOrgMetadata, updateSession, selectedAgentConfigSet]); // Add agentMetadata dependency
+      // Dependencies: 
+      // - sessionStatus: Trigger when connected/disconnected.
+      // - selectedAgentName: Trigger when agent changes (flag reset handled in separate effect).
+      // - agentMetadata: Trigger *only* when the essential initial metadata (chatbotId/session_id) is first available.
+      // - selectedAgentConfigSet: Ensure config is loaded.
+      // Dependencies fetchOrgMetadata and updateSession are stable useCallback refs.
+  }, [sessionStatus, selectedAgentName, agentMetadata?.chatbot_id, agentMetadata?.session_id, selectedAgentConfigSet, fetchOrgMetadata, updateSession, addTranscriptMessage]); 
+
+  // Separate effect to reset the setup flag when the agent name changes
+  const previousAgentNameRef = useRef<string | null>(null);
+  useEffect(() => {
+      if (selectedAgentName !== previousAgentNameRef.current && previousAgentNameRef.current !== null) {
+          console.log(`[Effect] Agent changed from ${previousAgentNameRef.current} to ${selectedAgentName}. Resetting setup flag.`);
+          initialSessionSetupDoneRef.current = false;
+          // The main effect above will then run the setup for the new agent.
+      }
+      previousAgentNameRef.current = selectedAgentName;
+  }, [selectedAgentName]);
 
   // Effect for cleanup on unmount
   useEffect(() => {
@@ -445,7 +542,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
   const toggleMic = () => {
     setMicMuted(!micMuted)
     // TODO: Add PTT logic here if needed, calling sendClientEvent
-     addTranscriptMessage(uuidv4(), 'system', 'Microphone control not fully implemented yet.');
+     addTranscriptMessage(generateSafeId(), 'system', 'Microphone control not fully implemented yet.');
   }
 
   // Updated Send Handler
@@ -454,7 +551,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
     if (!textToSend || sessionStatus !== 'CONNECTED' || !dcRef.current) return;
 
     console.log(`[Send Text] Sending: "${textToSend}"`);
-    const userMessageId = uuidv4();
+    const userMessageId = generateSafeId();
 
     // Add user message optimistically to transcript
      addTranscriptMessage(userMessageId, 'user', textToSend);
@@ -492,7 +589,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
            if (chatbotId) {
                connectToRealtime();
            } else {
-               addTranscriptMessage(uuidv4(), 'system', 'Cannot connect: Chatbot ID is missing.');
+               addTranscriptMessage(generateSafeId(), 'system', 'Cannot connect: Chatbot ID is missing.');
                console.error("Attempted to connect without a chatbotId.");
            }
       } else {

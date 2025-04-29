@@ -46,7 +46,10 @@ export async function POST() {
     }
 
     console.log("Successfully received session data from OpenAI:", data);
-    // Return the data received from OpenAI (e.g., { client_secret, session_id })
+    // Log the specific client_secret value being returned
+    const secretValue = data?.client_secret?.value;
+    console.log("Returning client_secret value:", secretValue ? `${secretValue.substring(0, 5)}...[REDACTED]` : "Not found or invalid structure");
+    // Return the data received from OpenAI (e.g., { client_secret: { value: '...' }, session_id })
     return NextResponse.json(data);
 
   } catch (error: any) {
