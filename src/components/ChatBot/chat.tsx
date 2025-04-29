@@ -257,8 +257,15 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
 
        const languageCode = "en"; // TODO: Make language selectable if needed
 
-       // Configure turn detection (disable for now, like PTT active in old code)
-       const turnDetection = null; 
+       // Configure turn detection - Critical for automatic speech detection
+       // This is what enables the microphone to automatically detect when user starts/stops speaking
+       const turnDetection = {
+           type: "server_vad",
+           threshold: 0.5,
+           prefix_padding_ms: 250,
+           silence_duration_ms: 400,
+           create_response: true,
+       };
 
        // Clear any existing audio buffer before updating
        sendClientEvent({ type: "input_audio_buffer.clear" }, "clear audio buffer on session update");
@@ -277,7 +284,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
                     model: "whisper-1", // Default model (adjust if needed)
                     language: languageCode,
                 },
-                turn_detection: turnDetection, // Default to null (no VAD)
+                turn_detection: turnDetection, // Enable automatic voice detection
                 tools: currentAgent.tools || [], // Include agent tools
 
                 // DO NOT explicitly send metadata object here
@@ -292,7 +299,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
            console.log("[Update Session] Triggering initial response with simulated 'hi' message");
            sendSimulatedUserMessage("hi");
        }
-   }, [sessionStatus, selectedAgentName, selectedAgentConfigSet, agentMetadata, chatbotId, sendClientEvent, addTranscriptMessage]); 
+   }, [sessionStatus, selectedAgentName, selectedAgentConfigSet, agentMetadata, chatbotId, sendClientEvent]); 
 
    // Add the sendSimulatedUserMessage function to match old code
    const sendSimulatedUserMessage = useCallback((text: string) => {
@@ -322,6 +329,46 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
            "(trigger response after simulated user message)"
        );
    }, [sendClientEvent]);
+
+   // --- Add Mic handling functions ---
+   // Function to manually commit audio buffer (for use with mic button)
+   const commitAudioBuffer = useCallback(() => {
+       if (sessionStatus !== 'CONNECTED' || !dcRef.current) return;
+       console.log("[Audio] Manually committing audio buffer");
+       sendClientEvent({ type: "input_audio_buffer.commit" }, "manual commit");
+       sendClientEvent({ type: "response.create" }, "trigger response after commit");
+   }, [sessionStatus, sendClientEvent]);
+   
+   // Improved toggleMic function that properly controls the microphone
+   const toggleMic = () => {
+     setMicMuted(!micMuted);
+     
+     if (sessionStatus !== 'CONNECTED' || !dcRef.current) {
+         console.log("[Audio] Cannot toggle microphone, not connected");
+         return;
+     }
+     
+     if (micMuted) {
+         // User is enabling the microphone
+         console.log("[Audio] Enabling microphone");
+         // Clear any existing buffer
+         sendClientEvent({ type: "input_audio_buffer.clear" }, "clear on mic enable");
+         // Update session with turn detection enabled
+         updateSession(false);
+     } else {
+         // User is muting the microphone
+         console.log("[Audio] Disabling microphone");
+         // Update session with turn detection disabled to stop listening
+         const disableTurnDetectionPayload = {
+             type: "session.update",
+             session: {
+                 // Only update turn_detection without changing other settings
+                 turn_detection: null,
+             },
+         };
+         sendClientEvent(disableTurnDetectionPayload, "(disable turn detection)");
+     }
+   };
 
   // --- Connection Management --- 
   const connectToRealtime = useCallback(async () => {
@@ -552,13 +599,6 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
         inputRef.current?.focus()
       }, 300)
     }
-  }
-
-  // Placeholder Mic Toggle
-  const toggleMic = () => {
-    setMicMuted(!micMuted)
-    // TODO: Add PTT logic here if needed, calling sendClientEvent
-     addTranscriptMessage(generateSafeId(), 'system', 'Microphone control not fully implemented yet.');
   }
 
   // Updated Send Handler
@@ -860,6 +900,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
               onClick={toggleMic} 
               className={`p-3 rounded-full transition-colors ${micMuted ? 'bg-gray-600' : 'bg-[#47679D] hover:bg-blue-600'}`}
               disabled={sessionStatus !== 'CONNECTED'} // Disable mic if not connected
+              title={micMuted ? "Microphone Off - Click to enable" : "Microphone On - Click to disable"}
            >
             {micMuted ? <MicOff size={20} /> : <Mic size={20} />}
           </button>
