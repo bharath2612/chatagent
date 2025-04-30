@@ -902,26 +902,34 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
           )}
 
           {/* --- Main Content Area --- */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-3 scrollbar-thin scrollbar-thumb-blue-700 scrollbar-track-blue-800">
-            {/* Render Transcript Items */}
-            {transcriptItems.map((item) => (
-               item.type === 'MESSAGE' && (
-                 <div key={item.itemId} className={`flex ${item.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                   <div 
-                     className={`max-w-[80%] p-3 rounded-2xl text-sm ${ 
-                       item.role === 'user' 
-                       ? 'bg-blue-600 rounded-br-none' 
-                       : 'bg-gray-600 rounded-bl-none'
-                     } ${item.status === 'IN_PROGRESS' && item.role ==='assistant' ? 'opacity-80' : ''}`}
-                   >
-                     {item.text || (item.role === 'assistant' && item.status === 'IN_PROGRESS' ? '...' : '')}
-                   </div>
-                 </div>
-               )
-            ))}
-            {/* Element to scroll to */} 
-            <div ref={transcriptEndRef} />
+          <div className="flex-1 overflow-y-auto p-4 scrollbar-thin scrollbar-thumb-blue-700 scrollbar-track-blue-800 flex items-center justify-center">
+            {/* Show only the most recent message */}
+            {transcriptItems.length > 0 && (
+              <>
+                {/* Display only the most recent assistant message in center of screen */}
+                {transcriptItems
+                  .filter(item => item.type === 'MESSAGE' && item.role === 'assistant')
+                  .slice(-1)
+                  .map(item => (
+                    <div key={item.itemId} className="w-full">
+                      <p className="text-white text-xl font-medium italic">
+                        {item.text || (item.status === 'IN_PROGRESS' ? '...' : '')}
+                      </p>
+                    </div>
+                  ))}
+              </>
+            )}
           </div>
+
+          {/* Current user message overlay - show only most recent user message */}
+          {transcriptItems
+            .filter(item => item.type === 'MESSAGE' && item.role === 'user')
+            .slice(-1)
+            .map(item => (
+              <div key={item.itemId} className="absolute bottom-20 right-4 max-w-[80%] bg-blue-600 p-3 rounded-xl text-sm text-white rounded-br-none">
+                {item.text || '[Transcribing...]'}
+              </div>
+            ))}
 
           {/* Existing UI for properties/appointments (conditional rendering) */}
           {appointment && selectedProperty && (
