@@ -157,9 +157,9 @@ const authentication: AgentConfig = {
         return { error: "Invalid chatbot ID format" };
       }
 
-      const serviceRoleKey = process.env.NEXT_PUBLIC_SERVICE_ROLE_KEY;
-      if (!serviceRoleKey) {
-        console.error("[submitPhoneNumber] Missing NEXT_PUBLIC_SERVICE_ROLE_KEY environment variable.");
+      const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+      if (!anonKey) {
+        console.error("[submitPhoneNumber] Missing NEXT_PUBLIC_SUPABASE_ANON_KEY environment variable.");
         return { error: "Server configuration error." };
       }
 
@@ -186,7 +186,7 @@ const authentication: AgentConfig = {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
-              "Authorization": `Bearer ${serviceRoleKey}`,
+              "Authorization": `Bearer ${anonKey}`,
             },
             body: JSON.stringify(requestBody),
           }
@@ -238,9 +238,9 @@ const authentication: AgentConfig = {
         return { error: "Invalid chatbot ID format" };
       }
 
-       const serviceRoleKey = process.env.NEXT_PUBLIC_SERVICE_ROLE_KEY;
-       if (!serviceRoleKey) {
-         console.error("[verifyOTP] Missing NEXT_PUBLIC_SERVICE_ROLE_KEY environment variable.");
+       const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+       if (!anonKey) {
+         console.error("[verifyOTP] Missing NEXT_PUBLIC_SUPABASE_ANON_KEY environment variable.");
          return { error: "Server configuration error." };
        }
 
@@ -267,7 +267,7 @@ const authentication: AgentConfig = {
              method: "POST",
              headers: {
                "Content-Type": "application/json",
-               "Authorization": `Bearer ${serviceRoleKey}`,
+               "Authorization": `Bearer ${anonKey}`,
              },
              body: JSON.stringify(requestBody),
            }
