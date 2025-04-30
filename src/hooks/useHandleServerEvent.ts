@@ -1,7 +1,7 @@
 "use client";
 
 import { ServerEvent, SessionStatus, AgentConfig, TranscriptItem } from "@/types/types"; // Adjusted import path, added TranscriptItem
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, useState } from "react";
 
 // Helper function to create safe IDs (must be 32 chars or less)
 const generateSafeId = () => {
@@ -46,6 +46,12 @@ export function useHandleServerEvent({
 }: UseHandleServerEventParams) {
   // Removed context hook calls
   // const { logServerEvent } = useEvent(); // Placeholder call - Logging can be added back if needed
+
+  // Add state to track active responses
+  const hasActiveResponseRef = useRef(false);
+  
+  // Track the ID of the simulated message to filter it out
+  const simulatedMessageIdRef = useRef<string | null>(null);
 
   const handleFunctionCall = async (functionCallParams: {
     name: string;
@@ -285,6 +291,14 @@ export function useHandleServerEvent({
              break;
         }
 
+        // Skip adding simulated "hi" messages to the transcript
+        if (role === "user" && text === "hi" && serverEvent.item?.content?.[0]?.type === "input_text") {
+          console.log(`[Transcript] Skipping simulated "hi" message: ${itemId}`);
+          // Store this ID to filter out related events
+          simulatedMessageIdRef.current = itemId;
+          break;
+        }
+
         console.log(
           `[Transcript] Item created: role=${role}, itemId=${itemId}, has text=${!!text}`
         );
@@ -354,7 +368,18 @@ export function useHandleServerEvent({
         break;
       }
 
+      case "response.created": {
+        // Mark that we have an active response
+        hasActiveResponseRef.current = true;
+        console.log(`[Server Event] Response created, marked as active`);
+        break;
+      }
+
       case "response.done": {
+        // Mark that the response is complete
+        hasActiveResponseRef.current = false;
+        console.log(`[Server Event] Response done, marked as inactive`);
+        
         if (serverEvent.response?.output) {
           serverEvent.response.output.forEach((outputItem) => {
             if (
@@ -383,7 +408,6 @@ export function useHandleServerEvent({
       }
 
       // Handle the previously unhandled event types
-      case "response.created":
       case "rate_limits.updated":
         // These events can be logged but don't require specific handling
         console.log(`[Server Event] ${serverEvent.type} received and acknowledged`);
@@ -431,10 +455,15 @@ export function useHandleServerEvent({
            const errorMessage = errorDetails?.message || JSON.stringify(serverEvent) || 'Unknown error structure from server';
            const errorCode = errorDetails?.code || 'N/A';
            console.error(`[Top-Level Error Event] Code: ${errorCode}, Message: ${errorMessage}`, errorDetails, serverEvent);
+           
+           // If we get a "conversation_already_has_active_response" error, update our tracking state
+           if (errorCode === "conversation_already_has_active_response") {
+             hasActiveResponseRef.current = true;
+             console.log("[Error Handler] Marked response as active due to error");
+           }
+           
            // Add error message to transcript
            addTranscriptMessage(generateSafeId(), 'system', `Server Error (${errorCode}): ${errorMessage}`);
-           // Decide if we should disconnect based on this error type - maybe not always?
-           // setSessionStatus("DISCONNECTED"); 
            break;
        }
 
@@ -463,5 +492,13 @@ export function useHandleServerEvent({
       updateTranscriptItemStatus
   ]);
 
-  return handleServerEventRef; // Return the ref containing the latest handler
+  // Expose a function to check if a response is active before creating a new one
+  const canCreateResponse = () => !hasActiveResponseRef.current;
+
+  // Return both the event handler ref and the canCreateResponse function
+  return {
+    handleServerEvent: handleServerEventRef,
+    canCreateResponse,
+    setSimulatedMessageId: (id: string) => { simulatedMessageIdRef.current = id; }
+  };
 } 

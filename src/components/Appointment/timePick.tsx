@@ -92,7 +92,11 @@ export default function TimePick({ schedule, property }: TimePickProps) {
             animate="visible"
             exit="exit"
           >
-            <AppointmentConfirmed property={property} />
+            <AppointmentConfirmed 
+              property={property} 
+              date={selectedDay}
+              time={selectedTime || ""}
+            />
           </motion.div>
         ) : selectedTime ? (
           <motion.div

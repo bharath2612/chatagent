@@ -71,6 +71,14 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
   const [selectedDay, setSelectedDay] = useState<string>("Monday")
   const [selectedTime, setSelectedTime] = useState<string | null>(null)
   const [isConfirmed, setIsConfirmed] = useState<boolean>(false)
+  
+  // --- New Intro Screen State ---
+  const [showIntro, setShowIntro] = useState(true) // Start with intro screen visible
+  const [selectedLanguage, setSelectedLanguage] = useState("English")
+  const languageOptions = [
+    "English", "Hindi", "Tamil", "Spanish", "French", 
+    "German", "Chinese", "Japanese", "Arabic", "Russian"
+  ]
 
   // --- Agent & Connection State --- 
   const [sessionStatus, setSessionStatus] = useState<SessionStatus>("DISCONNECTED");
@@ -157,7 +165,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
   }, [addTranscriptMessage]); // Updated dependency
 
   // --- Initialize Event Handler Hook --- 
-  const handleServerEventRef = useHandleServerEvent({
+  const { handleServerEvent: handleServerEventRef, canCreateResponse } = useHandleServerEvent({
       setSessionStatus,
       selectedAgentName,
       selectedAgentConfigSet,
@@ -230,13 +238,20 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
        // Ensure agent metadata state is merged into the agent config before sending
        if (agentMetadata) {
             currentAgent.metadata = { ...(currentAgent.metadata || {}), ...agentMetadata };
+            // Add selected language to metadata
+            currentAgent.metadata.language = selectedLanguage;
        } else {
             // If agentMetadata is still null, ensure chatbotId is present
-             currentAgent.metadata = { ...(currentAgent.metadata || {}), chatbot_id: chatbotId, session_id: generateSafeId() };
+             currentAgent.metadata = { 
+                 ...(currentAgent.metadata || {}), 
+                 chatbot_id: chatbotId, 
+                 session_id: generateSafeId(),
+                 language: selectedLanguage
+             };
              console.warn("[Update Session] agentMetadata state was null, initializing from props/new session.")
        }
 
-       console.log(`[Update Session] Updating server session for agent: ${selectedAgentName}`);
+       console.log(`[Update Session] Updating server session for agent: ${selectedAgentName}, language: ${selectedLanguage}`);
 
        // Prepare instructions, potentially injecting metadata dynamically
        let instructions = currentAgent.instructions;
@@ -255,7 +270,23 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
              }
        }
 
-       const languageCode = "en"; // TODO: Make language selectable if needed
+       // Map language names to ISO codes
+       const languageMapping: Record<string, string> = {
+           "English": "en",
+           "Hindi": "hi",
+           "Tamil": "ta",
+           "Spanish": "es",
+           "French": "fr",
+           "German": "de",
+           "Chinese": "zh",
+           "Japanese": "ja",
+           "Arabic": "ar",
+           "Russian": "ru"
+       };
+       
+       // Get the ISO language code for the selected language
+       const languageCode = languageMapping[selectedLanguage] || "en";
+       console.log(`[Update Session] Using language code: ${languageCode} for ${selectedLanguage}`);
 
        // Configure turn detection - Critical for automatic speech detection
        // This is what enables the microphone to automatically detect when user starts/stops speaking
@@ -299,7 +330,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
            console.log("[Update Session] Triggering initial response with simulated 'hi' message");
            sendSimulatedUserMessage("hi");
        }
-   }, [sessionStatus, selectedAgentName, selectedAgentConfigSet, agentMetadata, chatbotId, sendClientEvent]); 
+   }, [sessionStatus, selectedAgentName, selectedAgentConfigSet, agentMetadata, chatbotId, sendClientEvent, selectedLanguage]); 
 
    // Add the sendSimulatedUserMessage function to match old code
    const sendSimulatedUserMessage = useCallback((text: string) => {
@@ -683,6 +714,20 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
     setIsConfirmed(false)
   }
 
+  // --- Handle language selection and proceed to chat ---
+  const handleLanguageSelect = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    setSelectedLanguage(e.target.value);
+  };
+
+  const handleProceed = () => {
+    setShowIntro(false);
+    
+    // Connect to realtime service if not already connected
+    if (sessionStatus === "DISCONNECTED") {
+      connectToRealtime();
+    }
+  };
+
   // --- Render --- 
   // Placeholder: Fetch properties (replace with actual logic or agent interaction)
    const properties: PropertyProps[] = [
@@ -790,134 +835,199 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
         </button>
       </div>
       
-      {/* Voice Waveform (conditional?) */}
-      {sessionStatus === 'CONNECTED' && (
-           <div className="border-1 h-10 rounded-3xl w-72 p-4 justify-evenly ml-5 my-2 flex-shrink-0">
-       <VoiceWaveform/>
-       </div>
-      )}
-
-      {/* --- Main Content Area --- */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-3 scrollbar-thin scrollbar-thumb-blue-700 scrollbar-track-blue-800">
-        {/* Render Transcript Items */}
-        {transcriptItems.map((item) => (
-           item.type === 'MESSAGE' && (
-               <div key={item.itemId} className={`flex ${item.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                   <div 
-                       className={`max-w-[80%] p-3 rounded-2xl text-sm ${ 
-                           item.role === 'user' 
-                           ? 'bg-blue-600 rounded-br-none' 
-                           : 'bg-gray-600 rounded-bl-none'
-                       } ${item.status === 'IN_PROGRESS' && item.role ==='assistant' ? 'opacity-80' : ''}`}
-                   >
-                       {item.text || (item.role === 'assistant' && item.status === 'IN_PROGRESS' ? '...' : '')}
-                        {/* Optionally show status indicator */} 
-                        {/* {item.status === 'IN_PROGRESS' && <Loader size={10} className="inline-block ml-1 animate-spin" />} */}
-                   </div>
-               </div>
-           )
-        ))}
-         {/* Element to scroll to */} 
-         <div ref={transcriptEndRef} />
-      </div>
-
-      {/* Existing UI for properties/appointments (conditional rendering) */}
-        {appointment && selectedProperty && (
-            <div className="absolute inset-0 bg-blue-900 bg-opacity-90 flex items-center justify-center z-10 p-4">
-           <PropertyConfirmation
-           onClose={handleCloseConfirmation}
-           selectedTime={selectedTime || ""}
-           selectedDay={selectedDay}
-           onConfirm={handleConfirmBooking}
-           property={selectedProperty}
-         />
-        </div>
-        )}
-        {showProperties && (
-            <div className="absolute inset-0 bg-blue-900 bg-opacity-90 flex items-center justify-center z-10 p-4 overflow-auto">
-                 <button onClick={() => setShowProperties(false)} className="absolute top-4 right-4 p-2 bg-red-500 rounded-full z-20"><X size={18}/></button>
-                 <PropertyList properties={properties} onScheduleVisit={handleScheduleVisit}/>
-            </div>
-        )}
-        {isConfirmed && selectedProperty && (
-             <div className="absolute inset-0 bg-blue-900 bg-opacity-95 flex items-center justify-center z-10 p-4">
-                  <AppointmentConfirmed 
-                    onClose={handleReset} 
-                    property={selectedProperty}
-                    date={selectedDay} // Pass selected date/time
-                    time={selectedTime || ""}
-                />
-          </div>
-          )}
-
-      {/* --- Bottom Controls Area --- */}
-      <div className="mt-auto flex-shrink-0 z-20">
-        <AnimatePresence>
-          {inputVisible && (
-            <motion.div /* Keep animation as is */
-              initial={{ y: 60 }}
-              animate={{ y: 0 }}
-              exit={{ y: 60 }}
-              transition={{ type: "spring", stiffness: 300, damping: 30 }}
-              className="rounded-xl w-[320px] -mb-1 ml-1 h-[48px] shadow-lg bg-[#47679D]"
+      {/* Intro Screen */}
+      {showIntro ? (
+        <div className="flex flex-col h-full items-center justify-center p-6 text-center">
+          <h2 className="text-2xl font-medium mb-6">
+            Hey there, Please select a language
+          </h2>
+          
+          <div className="relative w-full mb-8">
+            <select
+              value={selectedLanguage}
+              onChange={handleLanguageSelect}
+              className="appearance-none bg-transparent py-2 pr-10 border-b-2 border-white w-full text-center text-xl font-medium focus:outline-none"
             >
-              <div className="flex items-center justify-between w-full px-4 py-2 rounded-lg">
-                <input
-                  ref={inputRef}
-                  type="text"
-                  value={inputValue}
-                  onChange={(e) => setInputValue(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  placeholder={sessionStatus === 'CONNECTED' ? "Type your message..." : "Connect call to type"}
-                  className="flex-1 mt-1 bg-transparent outline-none text-white placeholder:text-white placeholder:opacity-50 text-sm"
-                  disabled={sessionStatus !== 'CONNECTED'}
-                />
-                <button 
-                    onClick={handleSend} 
-                    className="ml-2 mt-1 text-white disabled:opacity-50"
-                    disabled={sessionStatus !== 'CONNECTED' || !inputValue.trim()}
-                 >
-                  <Send size={18} />
-                </button>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* Button Bar */}
-        <div className="flex justify-between items-center p-3 bg-blue-900">
-          <button onClick={toggleInput} className="bg-[#47679D] p-3 rounded-full hover:bg-blue-600 transition-colors">
-            <MessageSquare size={20} />
+              {languageOptions.map(lang => (
+                <option key={lang} value={lang} className="bg-blue-800 text-white">
+                  {lang}
+                </option>
+              ))}
+            </select>
+            <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-white">
+              <svg className="fill-current h-4 w-4" viewBox="0 0 20 20"><path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z"/></svg>
+            </div>
+          </div>
+          
+          <p className="text-xl mb-8">to continue.</p>
+          
+          <button 
+            onClick={handleProceed}
+            className="bg-white text-blue-900 px-6 py-2 rounded-md font-medium hover:bg-blue-100 transition-colors"
+          >
+            Let's go
           </button>
+          
+          {/* Bottom buttons (decorative in intro) */}
+          <div className="absolute bottom-0 left-0 right-0 flex justify-between items-center p-4 bg-blue-900">
+            <button className="bg-[#47679D] p-3 rounded-full hover:bg-blue-600 transition-colors">
+              <MessageSquare size={20} />
+            </button>
+            
+            <div className="text-center">
+              {/* Dots for decoration */}
+              <div className="flex justify-center space-x-1">
+                {Array(10).fill(0).map((_, i) => (
+                  <div key={i} className="w-1 h-1 bg-white rounded-full opacity-50"></div>
+                ))}
+              </div>
+            </div>
+            
+            <button className="bg-[#47679D] p-3 rounded-full hover:bg-blue-600 transition-colors">
+              <Mic size={20} />
+            </button>
+            
+            <button className="bg-red-500 p-3 rounded-full hover:bg-red-600 transition-colors">
+              <Phone size={18} />
+            </button>
+          </div>
+        </div>
+      ) : (
+        <>
+          {/* Voice Waveform (conditional?) */}
+          {sessionStatus === 'CONNECTED' && (
+             <div className="border-1 h-10 rounded-3xl w-72 p-4 justify-evenly ml-5 my-2 flex-shrink-0">
+               <VoiceWaveform/>
+             </div>
+          )}
 
-           {/* Placeholder dots - keep as is */}
-          <div className="flex justify-center space-x-1">
-             {/* ... (keep existing dots) ... */} 
-               {Array(15).fill(0).map((_, i) => (<div key={i} className="w-1 h-1 bg-white rounded-full opacity-50"></div>))}
+          {/* --- Main Content Area --- */}
+          <div className="flex-1 overflow-y-auto p-4 space-y-3 scrollbar-thin scrollbar-thumb-blue-700 scrollbar-track-blue-800">
+            {/* Render Transcript Items */}
+            {transcriptItems.map((item) => (
+               item.type === 'MESSAGE' && (
+                 <div key={item.itemId} className={`flex ${item.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                   <div 
+                     className={`max-w-[80%] p-3 rounded-2xl text-sm ${ 
+                       item.role === 'user' 
+                       ? 'bg-blue-600 rounded-br-none' 
+                       : 'bg-gray-600 rounded-bl-none'
+                     } ${item.status === 'IN_PROGRESS' && item.role ==='assistant' ? 'opacity-80' : ''}`}
+                   >
+                     {item.text || (item.role === 'assistant' && item.status === 'IN_PROGRESS' ? '...' : '')}
+                   </div>
+                 </div>
+               )
+            ))}
+            {/* Element to scroll to */} 
+            <div ref={transcriptEndRef} />
           </div>
 
-          <button 
-              onClick={toggleMic} 
-              className={`p-3 rounded-full transition-colors ${micMuted ? 'bg-gray-600' : 'bg-[#47679D] hover:bg-blue-600'}`}
-              disabled={sessionStatus !== 'CONNECTED'} // Disable mic if not connected
-              title={micMuted ? "Microphone Off - Click to enable" : "Microphone On - Click to disable"}
-           >
-            {micMuted ? <MicOff size={20} /> : <Mic size={20} />}
-          </button>
+          {/* Existing UI for properties/appointments (conditional rendering) */}
+          {appointment && selectedProperty && (
+            <div className="absolute inset-0 bg-blue-900 bg-opacity-90 flex items-center justify-center z-10 p-4">
+              <PropertyConfirmation
+                onClose={handleCloseConfirmation}
+                selectedTime={selectedTime || ""}
+                selectedDay={selectedDay}
+                onConfirm={handleConfirmBooking}
+                property={selectedProperty}
+              />
+            </div>
+          )}
+          
+          {showProperties && (
+            <div className="absolute inset-0 bg-blue-900 bg-opacity-90 flex items-center justify-center z-10 p-4 overflow-auto">
+              <button onClick={() => setShowProperties(false)} className="absolute top-4 right-4 p-2 bg-red-500 rounded-full z-20">
+                <X size={18}/>
+              </button>
+              <PropertyList properties={properties} onScheduleVisit={handleScheduleVisit}/>
+            </div>
+          )}
+          
+          {isConfirmed && selectedProperty && (
+            <div className="absolute inset-0 bg-blue-900 bg-opacity-95 flex items-center justify-center z-10 p-4">
+              <AppointmentConfirmed 
+                onClose={handleReset} 
+                property={selectedProperty}
+                date={selectedDay}
+                time={selectedTime || ""}
+              />
+            </div>
+          )}
 
-          {/* Call Button */}
-          <button 
-              onClick={handleCallButtonClick}
-              className={`${sessionStatus === 'CONNECTED' ? 'bg-red-500 hover:bg-red-600' : 'bg-green-500 hover:bg-green-600'} p-3 rounded-full transition-colors disabled:opacity-70`}
-              disabled={sessionStatus === 'CONNECTING' || (!chatbotId && sessionStatus === 'DISCONNECTED')} // Disable connect if no chatbotId
-           >
-             {sessionStatus === 'CONNECTING' ? <Loader size={18} className="animate-spin"/> : 
-              sessionStatus === 'CONNECTED' ? <PhoneOff size={18} /> : 
-              <Phone size={18} />
-             }
-          </button>
-        </div>
-      </div>
+          {/* --- Bottom Controls Area --- */}
+          <div className="mt-auto flex-shrink-0 z-20">
+            <AnimatePresence>
+              {inputVisible && (
+                <motion.div
+                  initial={{ y: 60 }}
+                  animate={{ y: 0 }}
+                  exit={{ y: 60 }}
+                  transition={{ type: "spring", stiffness: 300, damping: 30 }}
+                  className="rounded-xl w-[320px] -mb-1 ml-1 h-[48px] shadow-lg bg-[#47679D]"
+                >
+                  <div className="flex items-center justify-between w-full px-4 py-2 rounded-lg">
+                    <input
+                      ref={inputRef}
+                      type="text"
+                      value={inputValue}
+                      onChange={(e) => setInputValue(e.target.value)}
+                      onKeyDown={handleKeyDown}
+                      placeholder={sessionStatus === 'CONNECTED' ? "Type your message..." : "Connect call to type"}
+                      className="flex-1 mt-1 bg-transparent outline-none text-white placeholder:text-white placeholder:opacity-50 text-sm"
+                      disabled={sessionStatus !== 'CONNECTED'}
+                    />
+                    <button 
+                      onClick={handleSend} 
+                      className="ml-2 mt-1 text-white disabled:opacity-50"
+                      disabled={sessionStatus !== 'CONNECTED' || !inputValue.trim()}
+                    >
+                      <Send size={18} />
+                    </button>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* Button Bar */}
+            <div className="flex justify-between items-center p-3 bg-blue-900">
+              <button onClick={toggleInput} className="bg-[#47679D] p-3 rounded-full hover:bg-blue-600 transition-colors">
+                <MessageSquare size={20} />
+              </button>
+
+              {/* Placeholder dots */}
+              <div className="flex justify-center space-x-1">
+                {Array(15).fill(0).map((_, i) => (
+                  <div key={i} className="w-1 h-1 bg-white rounded-full opacity-50"></div>
+                ))}
+              </div>
+
+              <button 
+                onClick={toggleMic} 
+                className={`p-3 rounded-full transition-colors ${micMuted ? 'bg-gray-600' : 'bg-[#47679D] hover:bg-blue-600'}`}
+                disabled={sessionStatus !== 'CONNECTED'}
+                title={micMuted ? "Microphone Off - Click to enable" : "Microphone On - Click to disable"}
+              >
+                {micMuted ? <MicOff size={20} /> : <Mic size={20} />}
+              </button>
+
+              {/* Call Button */}
+              <button 
+                onClick={handleCallButtonClick}
+                className={`${sessionStatus === 'CONNECTED' ? 'bg-red-500 hover:bg-red-600' : 'bg-green-500 hover:bg-green-600'} p-3 rounded-full transition-colors disabled:opacity-70`}
+                disabled={sessionStatus === 'CONNECTING' || (!chatbotId && sessionStatus === 'DISCONNECTED')}
+              >
+                {sessionStatus === 'CONNECTING' ? <Loader size={18} className="animate-spin"/> : 
+                 sessionStatus === 'CONNECTED' ? <PhoneOff size={18} /> : 
+                 <Phone size={18} />
+                }
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+      
       {/* Hidden Audio Element */}
       <audio ref={audioElementRef} playsInline />
     </div>
