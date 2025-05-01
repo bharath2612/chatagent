@@ -10,7 +10,7 @@ const generateSafeId = () => {
 };
 
 // Define types for transcript management functions
-type AddTranscriptMessageType = (itemId: string, role: "user" | "assistant" | "system", text: string) => void;
+type AddTranscriptMessageType = (itemId: string, role: "user" | "assistant" | "system", text: string, properties?: any[]) => void;
 type UpdateTranscriptMessageType = (itemId: string, textDelta: string, isDelta: boolean) => void;
 type UpdateTranscriptItemStatusType = (itemId: string, status: "IN_PROGRESS" | "DONE" | "ERROR") => void;
 
@@ -297,6 +297,33 @@ export function useHandleServerEvent({
           // Store this ID to filter out related events
           simulatedMessageIdRef.current = itemId;
           break;
+        }
+
+        // Handle function_call_output specifically for getProjectDetails
+        if (serverEvent.item?.type === "function_call_output") {
+          // Type assertion to handle function_call_output which has 'output' property
+          const outputString = (serverEvent.item as any).output;
+          if (outputString) {
+            try {
+              const outputData = JSON.parse(outputString);
+              
+              // Check if this is output from getProjectDetails with properties array
+              if (outputData.properties && Array.isArray(outputData.properties)) {
+                console.log(`[Transcript] Found properties in function_call_output: ${itemId}`);
+                // Let our callback handle displaying the properties
+                // Pass properties as the fourth argument
+                addTranscriptMessage(
+                  itemId, 
+                  "assistant", 
+                  outputData.message || "Here are the properties I found:", 
+                  outputData.properties
+                );
+                return; // Skip further processing for this event
+              }
+            } catch (error) {
+              console.error("[Transcript] Error parsing function output:", error);
+            }
+          }
         }
 
         console.log(

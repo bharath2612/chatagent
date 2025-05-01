@@ -1,8 +1,14 @@
-import { AgentConfig, AgentMetadata, TranscriptItem } from "@/types/types"; // Adjusted path
+import { AgentConfig, AgentMetadata as BaseAgentMetadata, TranscriptItem } from "@/types/types"; // Adjusted path
 // Supabase/Langchain imports commented out - using edge function instead
 // import supabaseAdmin from "@/app/lib/supabaseClient"; // Requires setup in new project
 // import { OpenAIEmbeddings } from "@langchain/openai";
 // import { SupabaseVectorStore } from "@langchain/community/vectorstores/supabase";
+
+// Extend the AgentMetadata type to include project_id_map
+interface AgentMetadata extends BaseAgentMetadata {
+  project_id_map?: Record<string, string>; // Map project names to their IDs
+  active_project_id?: string; // Current active project ID for direct reference
+}
 
 // Required Environment Variables: NEXT_PUBLIC_SUPABASE_ANON_KEY
 // Optional Environment Variables: NEXT_PUBLIC_TOOLS_EDGE_FUNCTION_URL (defaults provided)
@@ -16,23 +22,24 @@ let questionCount = 0;
 // Dynamic instructions function - receives metadata object
 const getInstructions = (metadata: AgentMetadata | undefined | null) => {
   // Default values if metadata is missing
-  const defaultMetadata: Required<AgentMetadata> = {
+  const defaultMetadata = {
     org_id: "N/A",
     org_name: "the company",
     active_project: "N/A",
     property_location: "N/A",
-    project_names: [],
+    project_names: [] as string[],
     chatbot_id: "N/A",
     session_id: "N/A",
     is_verified: false,
     customer_name: "",
     phone_number: "",
-    project_ids: [],
-    project_locations: {},
+    project_ids: [] as string[],
+    project_locations: {} as Record<string, string>,
     has_scheduled: false,
     language: "English",
+    project_id_map: {} as Record<string, string>, // Map project names to their IDs
   };
-  const safeMetadata: Required<AgentMetadata> = { ...defaultMetadata, ...(metadata || {}) }; // Merge defaults with provided metadata
+  const safeMetadata = { ...defaultMetadata, ...(metadata || {}) }; // Merge defaults with provided metadata
 
   // Determine the active project for focus
   const activeProject = safeMetadata.active_project !== "N/A" ? safeMetadata.active_project :
@@ -51,30 +58,35 @@ ${safeMetadata.is_verified ? `The user is verified.` : `The user is NOT verified
 ${safeMetadata.has_scheduled ? `The user has already scheduled a property visit.` : ''}
 
 Your responsibilities include:
-1. Answering questions about properties managed by ${safeMetadata.org_name}.
-2. Providing directions to properties.
-3. Finding nearest places of interest relative to a property.
-4. Tracking user messages. If the user is NOT verified, transfer to the 'authentication' agent after 7 questions.
-5. Asking the user if they'd like to schedule a visit after 12 questions, but ONLY if they are verified AND haven't scheduled yet.
+1. Answering questions about properties managed by ${safeMetadata.org_name}. When providing a list of properties (e.g., from lookupProperty), keep your text brief and mention that the user can click on the cards shown below for more details.
+2. Providing directions to properties using 'calculateRoute'.
+3. Finding nearest places of interest using 'findNearestPlace'.
+4. Tracking user messages using 'trackUserMessage'. If the user is NOT verified, transfer to the 'authentication' agent after 7 questions.
+5. Asking the user if they'd like to schedule a visit after 12 questions (using the result from 'trackUserMessage'), but ONLY if they are verified AND haven't scheduled yet.
 6. Updating the internally focused property using 'updateActiveProject' whenever the user asks specifically about one property.
+7. Retrieving property images using 'getPropertyImages' when asked. The UI will display these.
 
 LANGUAGE INSTRUCTIONS:
 - The conversation language is set to ${safeMetadata.language || "English"}. Respond ONLY in ${safeMetadata.language || "English"}.
-- Keep answers concise and directly address the user's query.
+- Keep answers concise, especially when property cards or images are being displayed by the UI based on your tool results. Let the UI show the details.
 
 CRITICAL INSTRUCTIONS: 
-- When the user asks about properties in general, ALWAYS list ALL available properties (${projectList}).
-- Anytime a user asks SPECIFICALLY about one property (e.g., "tell me about ${safeMetadata.project_names[0] || 'Property A'}"), IMMEDIATELY call the updateActiveProject tool BEFORE generating your response.
+- When the user asks about properties in general (triggering 'lookupProperty'), ALWAYS list ALL available properties (${projectList}) briefly in text and mention the interactive cards.
+- Anytime a user asks SPECIFICALLY about one property (e.g., "tell me about ${safeMetadata.project_names[0] || 'Property A'}"), FIRST call 'detectPropertyInMessage'. If it returns 'shouldUpdateActiveProject: true', THEN call 'updateActiveProject' BEFORE generating your text response.
 - If the user is ALREADY VERIFIED (is_verified is true), NEVER transfer to authentication.
-- ONLY transfer to authentication if is_verified is false AND the question count reaches 7.
-- ONLY ask about scheduling a visit if is_verified is true AND has_scheduled is false AND the question count reaches 12.
+- ONLY transfer to authentication if is_verified is false AND the question count reaches 7 (indicated by 'trackUserMessage' result).
+- ONLY ask about scheduling a visit if is_verified is true AND has_scheduled is false AND the question count reaches 12 (indicated by 'trackUserMessage' result).
 
 TOOL USAGE:
 - ALWAYS use 'trackUserMessage' at the start of handling ANY user message.
-- Use 'lookupProperty' for property details (price, features, address).
+- ALWAYS use 'detectPropertyInMessage' *after* 'trackUserMessage' to see if the user mentioned a specific property.
+- Use 'updateActiveProject' ONLY IF 'detectPropertyInMessage' indicates it's needed.
+- Use 'lookupProperty' for general property details or lists. The UI will display results in cards. Your text should be brief.
+- Use 'getProjectDetails' for precise property information from the database when you need guaranteed up-to-date details about a specific property. This is preferred over lookupProperty when the user asks specifically about one property.
+  * IMPORTANT: When using getProjectDetails, ALWAYS use project_id when available in project_id_map rather than project_name.
 - Use 'calculateRoute' for directions.
 - Use 'findNearestPlace' for nearby amenities.
-- Use 'getPropertyImages' if the user asks to see images/pictures.
+- Use 'getPropertyImages' if the user asks to see images/pictures. The UI will display them.
 `;
 };
 
@@ -241,6 +253,27 @@ const realEstateAgent: AgentConfig = {
         additionalProperties: false,
       },
     },
+    {
+      type: "function",
+      name: "getProjectDetails",
+      description:
+        "Retrieves comprehensive details about a specific property directly from the database. Use when you need precise property information without semantic search.",
+      parameters: {
+        type: "object",
+        properties: {
+          project_id: {
+            type: "string",
+            description: "The unique ID of the project to get details for. This is the preferred parameter and should be used whenever available.",
+          },
+          project_name: {
+            type: "string",
+            description: "Alternative to project_id: The name of the property to get details for. Partial matches work. Only use if project_id is not available.",
+          },
+          // Note: Either project_id OR project_name must be provided
+        },
+        additionalProperties: false,
+      },
+    },
   ],
 
   // Tool Logic Implementation
@@ -349,12 +382,23 @@ const realEstateAgent: AgentConfig = {
         // Update metadata
         const previousProject = metadata.active_project;
         metadata.active_project = matchedProject; // Use original casing
+        
+        // Store the project_id too if available in project_id_map
+        const metadataAny = metadata as any;
+        if (metadataAny.project_id_map && metadataAny.project_id_map[matchedProject]) {
+            metadataAny.active_project_id = metadataAny.project_id_map[matchedProject];
+            console.log(`[updateActiveProject] Set active_project_id to: ${metadataAny.active_project_id}`);
+        }
 
         // Update instructions (important!)
         realEstateAgent.instructions = getInstructions(metadata);
 
         console.log(`[updateActiveProject] Success: Active project changed from "${previousProject}" to "${matchedProject}"`);
-        return { success: true, active_project: matchedProject };
+        return { 
+            success: true, 
+            active_project: matchedProject,
+            active_project_id: (metadata as any).active_project_id || null
+        };
     },
 
     fetchOrgMetadata: async ({ session_id, chatbot_id }: { session_id: string; chatbot_id: string; }) => {
@@ -388,6 +432,25 @@ const realEstateAgent: AgentConfig = {
             }
 
             console.log("[fetchOrgMetadata] Received metadata:", metadataResult);
+            
+            // Create project_id_map from returned data if not already present
+            if (!metadataResult.project_id_map && metadataResult.project_ids && metadataResult.project_names) {
+                // Make sure arrays are the same length
+                const minLength = Math.min(metadataResult.project_ids.length, metadataResult.project_names.length);
+                const project_id_map: Record<string, string> = {};
+                
+                // Create mapping from project name to ID
+                for (let i = 0; i < minLength; i++) {
+                    const name = metadataResult.project_names[i];
+                    const id = metadataResult.project_ids[i];
+                    if (name && id) {
+                        project_id_map[name] = id;
+                    }
+                }
+                
+                metadataResult.project_id_map = project_id_map;
+                console.log("[fetchOrgMetadata] Created project_id_map:", project_id_map);
+            }
 
             // Reset question count when metadata is fetched/refreshed
             questionCount = 0;
@@ -408,7 +471,7 @@ const realEstateAgent: AgentConfig = {
 
     // --- User Facing Tools --- 
 
-    lookupProperty: async ({ query, k = 3 }: { query: string; k?: number }) => {
+    lookupProperty: async ({ query, k = 3 }: { query: string; k?: number }, transcript: TranscriptItem[] = []) => {
         console.log(`[lookupProperty] Querying edge function: "${query}", k=${k}`);
         const metadata = realEstateAgent.metadata;
         const project_ids = metadata?.project_ids || [];
@@ -419,7 +482,6 @@ const realEstateAgent: AgentConfig = {
         }
          if (!project_ids.length) {
              console.warn("[lookupProperty] No project_ids in metadata to filter by.");
-             // Proceed anyway, edge function might handle it
          }
 
         try {
@@ -434,23 +496,140 @@ const realEstateAgent: AgentConfig = {
                     body: JSON.stringify({
                         action: "lookupProperty",
                         query,
-                        project_ids,
                         k,
+                        project_ids,
                     }),
                 }
             );
-            const data = await response.json();
 
-            if (response.ok && data.properties) {
-                console.log(`[lookupProperty] Retrieved ${data.properties.length} results.`);
-                return { properties: data.properties }; // Expects { properties: [...] }
-            } else {
-                console.error("[lookupProperty] Edge function error:", data.error || response.statusText);
-                return { error: data.error || "Error looking up property details." };
+            const result = await response.json();
+
+            if (!response.ok || result.error) {
+                console.error("[lookupProperty] Edge function error:", result.error || response.statusText);
+                return { error: result.error || "Error looking up property." };
             }
+
+            console.log("[lookupProperty] Received property results:", result);
+            return result;
+
         } catch (error: any) {
             console.error("[lookupProperty] Exception calling edge function:", error);
-            return { error: `Exception during property lookup: ${error.message}` };
+            return { error: `Exception looking up property: ${error.message}` };
+        }
+    },
+
+    getProjectDetails: async ({ project_id, project_name }: { project_id?: string; project_name?: string }, transcript: TranscriptItem[] = []) => {
+        console.log(`[getProjectDetails] Fetching project details: project_id=${project_id || 'none'}, project_name=${project_name || 'none'}`);
+        
+        const metadata = realEstateAgent.metadata;
+        const project_ids = [] as string[];
+        
+        // If specific project_id is provided, use it as an array item
+        if (project_id) {
+            project_ids.push(project_id);
+            console.log(`[getProjectDetails] Using specific project_id: ${project_id}`);
+        }
+        // If no project_id but project_name matches active project, use active_project_id if available
+        else if (project_name && metadata && metadata.active_project === project_name) {
+            const metadataAny = metadata as any;
+            if (metadataAny.active_project_id) {
+                project_ids.push(metadataAny.active_project_id);
+                console.log(`[getProjectDetails] Using active_project_id: ${metadataAny.active_project_id} for active project: ${project_name}`);
+            }
+        }
+        // If no project_id but project_name is provided, try to get ID from project_id_map
+        else if (project_name && metadata) {
+            const metadataAny = metadata as any;
+            if (metadataAny.project_id_map && metadataAny.project_id_map[project_name]) {
+                project_ids.push(metadataAny.project_id_map[project_name]);
+                console.log(`[getProjectDetails] Found project_id: ${metadataAny.project_id_map[project_name]} for project_name: ${project_name} in project_id_map`);
+            }
+        }
+        // If no specific project specified, use all available project IDs
+        if (project_ids.length === 0 && metadata?.project_ids && metadata.project_ids.length > 0) {
+            project_ids.push(...metadata.project_ids);
+            console.log(`[getProjectDetails] Using all available project_ids: ${project_ids.join(', ')}`);
+        }
+        
+        if (project_ids.length === 0) {
+            console.error("[getProjectDetails] No project IDs available");
+            return { error: "No project IDs available. Please specify a project or check your configuration." };
+        }
+        
+        if (!supabaseAnonKey) {
+            console.error("[getProjectDetails] Missing NEXT_PUBLIC_SUPABASE_ANON_KEY.");
+            return { error: "Server configuration error." };
+        }
+
+        try {
+            // Build payload with project_ids array to match the new format
+            const payload = {
+                action: "getProjectDetails",
+                project_ids: project_ids
+            };
+
+            console.log(`[getProjectDetails] Sending payload: ${JSON.stringify(payload)}`);
+
+            const response = await fetch(
+                toolsEdgeFunctionUrl,
+                {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        Authorization: `Bearer ${supabaseAnonKey}`,
+                    },
+                    body: JSON.stringify(payload),
+                }
+            );
+
+            const result = await response.json();
+
+            if (!response.ok || result.error) {
+                console.error("[getProjectDetails] Edge function error:", result.error || response.statusText);
+                return { error: result.error || "Error fetching project details." };
+            }
+
+            console.log("[getProjectDetails] Received project details:", result);
+            
+            // Update UI state with property list data
+            if (result.properties && result.properties.length > 0) {
+                console.log(`[getProjectDetails] Setting propertyListData with ${result.properties.length} properties`);
+                
+                // Transform property data to match frontend expected format
+                const formattedProperties = result.properties.map((property: any) => ({
+                    id: property.id,
+                    name: property.name || "Property",
+                    price: property.price || "Price on request",
+                    area: property.area || "Area unavailable",
+                    location: {
+                        city: property.location?.city || "Location unavailable",
+                        mapUrl: property.location?.coords ? 
+                            `https://www.google.com/maps/embed?pb=!1m18!1m12!1m3!1d500!2d${property.location.coords.split(',')[1]}!3d${property.location.coords.split(',')[0]}!2m3!1f0!2f0!3f0!3m2!1i1024!2i768!4f13.1!3m3!1m2!1s0x0%3A0x0!2z!5e0!3m2!1sen!2sin!4v1599999999999!5m2!1sen!2sin` : 
+                            ""
+                    },
+                    mainImage: property.images?.length > 0 ? property.images[0].url : "/placeholder.svg",
+                    galleryImages: (property.images || []).map((img: any) => ({
+                        url: img.url || "/placeholder.svg",
+                        alt: img.alt || property.name || "Property image"
+                    })),
+                    units: (property.units || []).map((unit: any) => ({
+                        type: typeof unit === 'string' ? unit : (unit.type || "Unit")
+                    })),
+                    amenities: (property.amenities || []).map((amenity: any) => ({
+                        name: typeof amenity === 'string' ? amenity : (amenity.name || "Amenity")
+                    })),
+                    description: property.description || "No description available",
+                    websiteUrl: property.websiteUrl || ""
+                }));
+                
+                result.properties = formattedProperties;
+            }
+            
+            return result;
+
+        } catch (error: any) {
+            console.error("[getProjectDetails] Exception calling edge function:", error);
+            return { error: `Exception fetching project details: ${error.message}` };
         }
     },
 

@@ -5,10 +5,9 @@ import { motion, AnimatePresence } from "framer-motion"
 import { MessageSquare, X, Mic, MicOff, Phone, Send, PhoneOff, Loader } from "lucide-react"
 import { v4 as uuidv4 } from 'uuid';
 
-// UI Components (existing)
+// UI Components
 import PropertyList from "../PropertyComponents/PropertyList"
-import PropertyConfirmation from "../Appointment/confirmProperty" // Updated import
-import AppointmentConfirmed from "../Appointment/Confirmations"
+import PropertyDetails from "../PropertyComponents/propertyDetails"
 import { VoiceWaveform } from "./VoiceWaveForm"
 
 // Agent Logic Imports
@@ -32,24 +31,28 @@ interface Amenity {
 }
 
 interface PropertyLocation {
-  city: string
-  mapUrl: string
+  city?: string
+  mapUrl?: string
+  coords?: string
 }
 
 interface PropertyImage {
-  url: string
-  alt: string
+  url?: string
+  alt?: string
 }
 
 interface PropertyProps {
-  name: string
-  price: string
-  area :string
-  location: PropertyLocation
-  mainImage: string
-  galleryImages: PropertyImage[]
-  units: PropertyUnit[]
-  amenities: Amenity[]
+  id?: string
+  name?: string
+  price?: string
+  area?: string
+  location?: PropertyLocation
+  mainImage?: string
+  galleryImages?: PropertyImage[]
+  units?: PropertyUnit[]
+  amenities?: Amenity[]
+  description?: string
+  websiteUrl?: string
   onClose?: () => void
 }
 
@@ -62,7 +65,7 @@ interface RealEstateAgentProps {
 export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { // Accept chatbotId prop
   // --- Existing UI State --- 
   const [inputVisible, setInputVisible] = useState(false)
-  const [micMuted, setMicMuted] = useState(false) // Placeholder for UI toggle
+  const [micMuted, setMicMuted] = useState(true) // Start muted
   const [inputValue, setInputValue] = useState("")
   const [showProperties, setShowProperties] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -92,6 +95,14 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
   // Store agent metadata directly in state, initialize with chatbotId
   const [agentMetadata, setAgentMetadata] = useState<AgentMetadata | null>(null); // Initialize as null initially
 
+  // --- NEW STATE FOR PROPERTY CARDS --- 
+  const [propertyListData, setPropertyListData] = useState<PropertyProps[] | null>(null);
+  const [selectedPropertyDetails, setSelectedPropertyDetails] = useState<PropertyProps | null>(null);
+  const [lastAgentTextMessage, setLastAgentTextMessage] = useState<string | null>(null);
+
+  // Add new state for audio context
+  const [audioContext, setAudioContext] = useState<AudioContext | null>(null);
+
   // --- Refs for WebRTC --- 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const dcRef = useRef<RTCDataChannel | null>(null);
@@ -103,32 +114,57 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
   const generateSafeId = () => uuidv4().replace(/-/g, '').slice(0, 32);
 
   // Update transcript management functions to use safe IDs
-  const addTranscriptMessage = useCallback((itemId: string, role: "user" | "assistant" | "system", text: string) => {
-      // If a new ID is being generated (like for system messages), make sure it's safe
+  const addTranscriptMessage = useCallback((itemId: string, role: "user" | "assistant" | "system", text: string, properties?: PropertyProps[]) => {
+      // *** LOGGING POINT 4 ***
+      console.log(`[addTranscriptMessage] Called with role: ${role}, itemId: ${itemId}, hasProperties: ${!!properties}`);
+      
       if (itemId === 'new' || itemId.length > 32) {
           itemId = generateSafeId();
       }
       
-      setTranscriptItems((prev) => [
-          ...prev,
-          {
-              itemId,
-              type: "MESSAGE",
-              role,
-              text,
-              createdAtMs: Date.now(),
-              status: role === 'assistant' ? 'IN_PROGRESS' : 'DONE',
-          },
-      ]);
+      if (role === 'assistant') {
+          setLastAgentTextMessage(text); 
+          if (properties && properties.length > 0) {
+              console.log('[addTranscriptMessage] Properties detected, calling setPropertyListData.', properties);
+              setPropertyListData(properties); 
+              setSelectedPropertyDetails(null); 
+          } 
+          // Removed the else block that was clearing propertyListData
+          // Only set properties if they exist, don't clear them for text messages
+      }
+      
+      setTranscriptItems((prev) => {
+           // Avoid adding duplicates if item already exists (e.g., from optimistic update)
+           if (prev.some(item => item.itemId === itemId)) {
+               console.log(`[addTranscriptMessage] Item ${itemId} already exists, skipping add.`);
+               return prev; 
+           }
+            console.log(`[addTranscriptMessage] Adding item ${itemId} to transcriptItems state.`);
+           return [
+               ...prev,
+               {
+                   itemId,
+                   type: "MESSAGE",
+                   role,
+                   text: text, 
+                   createdAtMs: Date.now(),
+                   status: (role === 'assistant' || role === 'user') ? 'IN_PROGRESS' : 'DONE',
+               },
+           ];
+       });
   }, []);
 
   const updateTranscriptMessage = useCallback((itemId: string, textDelta: string, isDelta: boolean) => {
       setTranscriptItems((prev) =>
           prev.map((item) => {
               if (item.itemId === itemId && item.type === 'MESSAGE') {
+                  const newText = isDelta ? (item.text || "") + textDelta : textDelta;
+                  if(item.role === 'assistant') {
+                      setLastAgentTextMessage(newText); // Update latest agent text state
+                  }
                   return {
                       ...item,
-                      text: isDelta ? (item.text || "") + textDelta : textDelta, // Append if delta, replace otherwise
+                      text: newText,
                       status: 'IN_PROGRESS', // Keep in progress while updating
                   };
               }
@@ -158,25 +194,219 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
         `[Send Event Error] Data channel not open. Attempted to send: ${eventObj.type} ${eventNameSuffix}`,
         eventObj
       );
-      // Optionally add an error message to the transcript
        addTranscriptMessage(generateSafeId(), 'system', `Error: Could not send message. Connection lost.`);
-       setSessionStatus("DISCONNECTED"); // Consider disconnecting if send fails
+       setSessionStatus("DISCONNECTED");
     }
   }, [addTranscriptMessage]); // Updated dependency
 
-  // --- Initialize Event Handler Hook --- 
-  const { handleServerEvent: handleServerEventRef, canCreateResponse } = useHandleServerEvent({
+  // --- Initialize Event Handler Hook (Modified to handle properties) --- 
+  const { 
+    handleServerEvent: handleServerEventRefFromHook, // Rename the ref from the hook
+    canCreateResponse 
+  } = useHandleServerEvent({
       setSessionStatus,
       selectedAgentName,
       selectedAgentConfigSet,
       sendClientEvent,
       setSelectedAgentName,
-      // Pass transcript state and functions
       transcriptItems,
-      addTranscriptMessage,
+      addTranscriptMessage, // Use the modified addTranscriptMessage
       updateTranscriptMessage,
       updateTranscriptItemStatus,
   });
+
+  // --- NEW PROPERTY HANDLERS --- 
+  const handlePropertySelect = (property: PropertyProps) => {
+    console.log(`[UI] Property selected: ${property.name} (${property.id})`);
+    setSelectedPropertyDetails(property);
+    setPropertyListData(null); // Hide the list when showing details
+  };
+
+  const handleClosePropertyDetails = () => {
+    console.log("[UI] Closing property details.");
+    setSelectedPropertyDetails(null);
+  };
+
+  // Direct method to load all properties using the agent's getProjectDetails function
+  const handleGetAllProperties = useCallback(async () => {
+    console.log("[UI] Attempting to load all properties directly");
+    
+    // Prevent multiple simultaneous calls
+    if (propertyListData) {
+      console.log("[UI] Properties already loaded, skipping request");
+      return;
+    }
+    
+    if (!selectedAgentConfigSet || !agentMetadata?.project_ids || agentMetadata.project_ids.length === 0) {
+      console.error("[UI] Cannot load properties - missing agent config or project IDs");
+      addTranscriptMessage(
+        generateSafeId(), 
+        'system', 
+        'Unable to load properties. Please try again later or ask for specific property information.'
+      );
+      return;
+    }
+    
+    const realEstateAgent = selectedAgentConfigSet.find(a => a.name === 'realEstate');
+    if (!realEstateAgent || !realEstateAgent.toolLogic?.getProjectDetails) {
+      console.error("[UI] Real estate agent or getProjectDetails function not found");
+      addTranscriptMessage(
+        generateSafeId(), 
+        'system', 
+        'Property information unavailable. Please try again later.'
+      );
+      return;
+    }
+    
+    try {
+      // Show loading message
+      addTranscriptMessage(generateSafeId(), 'system', 'Loading properties...');
+      
+      console.log(`[UI] Calling getProjectDetails with all project_ids: ${agentMetadata.project_ids.join(', ')}`);
+      const result = await realEstateAgent.toolLogic.getProjectDetails({}, []);
+      console.log("[UI] getProjectDetails result:", result);
+      
+      if (result.properties && Array.isArray(result.properties) && result.properties.length > 0) {
+        // Process and validate property data before setting state
+        const validatedProperties = result.properties.map((property: any) => {
+          // Ensure we have valid data for each property
+          return {
+            ...property,
+            id: property.id || generateSafeId(),
+            name: property.name || "Property",
+            price: property.price || "Price unavailable",
+            area: property.area || "Area unavailable",
+            mainImage: property.mainImage || "/placeholder.svg",
+            location: {
+              city: property.location?.city || "Location unavailable",
+              mapUrl: property.location?.mapUrl || "",
+            },
+            // Ensure other properties have defaults
+            galleryImages: Array.isArray(property.galleryImages) ? 
+              property.galleryImages.filter((img: any) => img && img.url) : [],
+            units: Array.isArray(property.units) ? property.units : [],
+            amenities: Array.isArray(property.amenities) ? property.amenities : [],
+          };
+        });
+        
+        console.log(`[UI] Setting propertyListData with ${validatedProperties.length} validated properties`);
+        setPropertyListData(validatedProperties);
+        
+        // Also add a message
+        const messageText = `Here are ${validatedProperties.length} properties available.`;
+        addTranscriptMessage(generateSafeId(), 'assistant', messageText, validatedProperties);
+      } else {
+        console.warn("[UI] No properties found or invalid response format");
+        if (result.error) {
+          console.error("[UI] Error loading properties:", result.error);
+          addTranscriptMessage(generateSafeId(), 'system', `Error loading properties: ${result.error}`);
+        } else {
+          addTranscriptMessage(generateSafeId(), 'system', 'No properties available at this time.');
+        }
+      }
+    } catch (error) {
+      console.error("[UI] Error in handleGetAllProperties:", error);
+      addTranscriptMessage(
+        generateSafeId(), 
+        'system', 
+        'An error occurred while loading properties. Please try again later.'
+      );
+    }
+  }, [selectedAgentConfigSet, agentMetadata, addTranscriptMessage, generateSafeId, propertyListData]);
+
+  // Handler for the schedule button inside PropertyDetails
+  const handleScheduleVisitRequest = (property: PropertyProps) => {
+      console.log(`[UI] Schedule visit requested for: ${property.name}`);
+      setSelectedPropertyDetails(null); // Close details modal
+      
+      const scheduleMessage = `I'd like to schedule a visit for ${property.name}.`;
+      const userMessageId = generateSafeId();
+      addTranscriptMessage(userMessageId, 'user', scheduleMessage);
+      sendClientEvent(
+        { type: "conversation.item.create", item: { id: userMessageId, type: "message", role: "user", content: [{ type: "input_text", text: scheduleMessage }] } },
+        "(schedule request from UI)"
+      );
+      sendClientEvent({ type: "response.create" }, "(trigger response after schedule request)");
+  };
+
+  // --- Handle Server Events (Wrap the hook's handler) --- 
+  const handleServerEvent = useCallback((serverEvent: ServerEvent) => {
+    console.log("[handleServerEvent] Processing event:", serverEvent.type, JSON.stringify(serverEvent, null, 2)); 
+
+    let assistantMessageHandledLocally = false; 
+    let propertiesHandledLocally = false;
+
+    // --- Handle Function Call Output --- 
+    if (serverEvent.type === "conversation.item.created" && serverEvent.item?.type === "function_call_output") {
+        const functionOutputItem = serverEvent.item as { id?: string; type: string; output?: string }; 
+        console.log("[handleServerEvent] Detected function_call_output item.");
+        const outputString = functionOutputItem?.output; 
+        const itemId = functionOutputItem?.id;
+
+        if (outputString) {
+             try {
+                console.log("[handleServerEvent] Parsing function_call_output string:", outputString);
+                const outputData = JSON.parse(outputString);
+                console.log("[handleServerEvent] Parsed outputData:", outputData);
+
+                // Check for the properties array - data should now be correctly formatted
+                if (outputData.properties && Array.isArray(outputData.properties)) {
+                    console.log("[handleServerEvent] Correctly formatted properties array found in function output.");
+                    
+                    // Always directly set propertyListData for immediate rendering
+                    const correctlyFormattedProperties: PropertyProps[] = outputData.properties;
+                    console.log("[handleServerEvent] Setting propertyListData directly:", correctlyFormattedProperties);
+                    setPropertyListData(correctlyFormattedProperties);
+                    
+                    // Then also add a transcript message with the properties
+                    const messageText = outputData.message || "Here are the properties I found.";
+                    const newItemId = itemId || generateSafeId(); 
+                    console.log(`[handleServerEvent] Adding transcript message with properties. itemId: ${newItemId}`);
+                    addTranscriptMessage(newItemId, 'assistant', messageText, correctlyFormattedProperties);
+                    updateTranscriptItemStatus(newItemId, 'DONE'); 
+                    propertiesHandledLocally = true; 
+                } 
+                else {
+                    console.log("[handleServerEvent] Parsed function output, but 'properties' array not found or not an array.");
+                }
+            } catch (e) {
+                console.warn("[handleServerEvent] Error parsing function call output JSON:", e, outputString);
+            }
+        } else {
+            console.log("[handleServerEvent] function_call_output item has no output string.");
+        }
+    }
+    
+    // We've removed the problematic response.done handler
+    // Now handling property data directly from conversation.item.created events
+    
+    // --- Handle Regular Assistant Message ---
+    if (!propertiesHandledLocally && serverEvent.type === "conversation.item.created" && serverEvent.item?.role === 'assistant') {
+         let text = serverEvent.item?.content?.[0]?.text ?? serverEvent.item?.content?.[0]?.transcript ?? "";
+         const itemId = serverEvent.item?.id;
+         if (itemId && text) {
+             console.log(`[handleServerEvent] Calling addTranscriptMessage for regular assistant message. itemId: ${itemId}, text: ${text}`);
+             addTranscriptMessage(itemId, 'assistant', text, undefined);
+             assistantMessageHandledLocally = true; // Mark that an assistant message was added
+         } else {
+             console.log("[handleServerEvent] Skipping assistant conversation.item.created event (no itemId or text).");
+         }
+     }
+
+     console.log(`[handleServerEvent] Passing event ${serverEvent.type} to original hook handler.`);
+     handleServerEventRefFromHook.current(serverEvent); 
+
+  }, [
+      addTranscriptMessage, 
+      updateTranscriptItemStatus, 
+      handleServerEventRefFromHook 
+    ]); 
+
+  // Ref part remains the same
+  const localHandleServerEventRef = useRef(handleServerEvent);
+  useEffect(() => {
+     localHandleServerEventRef.current = handleServerEvent;
+  }, [handleServerEvent]);
 
   // --- Fetch Org Metadata (Modified) --- 
   const fetchOrgMetadata = useCallback(async () => {
@@ -290,13 +520,13 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
 
        // Configure turn detection - Critical for automatic speech detection
        // This is what enables the microphone to automatically detect when user starts/stops speaking
-       const turnDetection = {
+       const turnDetection = !micMuted ? {
            type: "server_vad",
            threshold: 0.5,
            prefix_padding_ms: 250,
            silence_duration_ms: 400,
            create_response: true,
-       };
+       } : null;
 
        // Clear any existing audio buffer before updating
        sendClientEvent({ type: "input_audio_buffer.clear" }, "clear audio buffer on session update");
@@ -330,76 +560,87 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
            console.log("[Update Session] Triggering initial response with simulated 'hi' message");
            sendSimulatedUserMessage("hi");
        }
-   }, [sessionStatus, selectedAgentName, selectedAgentConfigSet, agentMetadata, chatbotId, sendClientEvent, selectedLanguage]); 
+   }, [sessionStatus, selectedAgentName, selectedAgentConfigSet, agentMetadata, chatbotId, sendClientEvent, selectedLanguage, micMuted]); 
 
-   // Add the sendSimulatedUserMessage function to match old code
-   const sendSimulatedUserMessage = useCallback((text: string) => {
-       // Generate a truncated ID (32 chars max as required by API)
-       const id = generateSafeId();
-       
-       // DO NOT add simulated message to transcript (it shouldn't be visible)
-       // addTranscriptMessage(id, "user", text);
+  // Add the sendSimulatedUserMessage function to match old code
+  const sendSimulatedUserMessage = useCallback((text: string) => {
+      // Generate a truncated ID (32 chars max as required by API)
+      const id = generateSafeId();
+      
+      // DO NOT add simulated message to transcript (it shouldn't be visible)
+      // addTranscriptMessage(id, "user", text);
 
-       // Send the message event
-       sendClientEvent(
-           {
-               type: "conversation.item.create",
-               item: {
-                   id,
-                   type: "message",
-                   role: "user",
-                   content: [{ type: "input_text", text }],
-               },
-           },
-           "(simulated user text message)"
-       );
+      // Send the message event
+      sendClientEvent(
+          {
+              type: "conversation.item.create",
+              item: {
+                  id,
+                  type: "message",
+                  role: "user",
+                  content: [{ type: "input_text", text }],
+              },
+          },
+          "(simulated user text message)"
+      );
 
-       // After sending message, trigger response
-       sendClientEvent(
-           { type: "response.create" },
-           "(trigger response after simulated user message)"
-       );
-   }, [sendClientEvent]);
+      // After sending message, trigger response
+      sendClientEvent(
+          { type: "response.create" },
+          "(trigger response after simulated user message)"
+      );
+  }, [sendClientEvent]);
 
-   // --- Add Mic handling functions ---
-   // Function to manually commit audio buffer (for use with mic button)
-   const commitAudioBuffer = useCallback(() => {
-       if (sessionStatus !== 'CONNECTED' || !dcRef.current) return;
-       console.log("[Audio] Manually committing audio buffer");
-       sendClientEvent({ type: "input_audio_buffer.commit" }, "manual commit");
-       sendClientEvent({ type: "response.create" }, "trigger response after commit");
-   }, [sessionStatus, sendClientEvent]);
-   
-   // Improved toggleMic function that properly controls the microphone
-   const toggleMic = () => {
-     setMicMuted(!micMuted);
-     
-     if (sessionStatus !== 'CONNECTED' || !dcRef.current) {
-         console.log("[Audio] Cannot toggle microphone, not connected");
-         return;
-     }
-     
-     if (micMuted) {
-         // User is enabling the microphone
-         console.log("[Audio] Enabling microphone");
-         // Clear any existing buffer
-         sendClientEvent({ type: "input_audio_buffer.clear" }, "clear on mic enable");
-         // Update session with turn detection enabled
-         updateSession(false);
-     } else {
-         // User is muting the microphone
-         console.log("[Audio] Disabling microphone");
-         // Update session with turn detection disabled to stop listening
-         const disableTurnDetectionPayload = {
-             type: "session.update",
-             session: {
-                 // Only update turn_detection without changing other settings
-                 turn_detection: null,
-             },
-         };
-         sendClientEvent(disableTurnDetectionPayload, "(disable turn detection)");
-     }
-   };
+  // --- Add Mic handling functions ---
+  // Function to manually commit audio buffer (for use with mic button)
+  const commitAudioBuffer = useCallback(() => {
+      if (sessionStatus !== 'CONNECTED' || !dcRef.current) return;
+      console.log("[Audio] Manually committing audio buffer");
+      sendClientEvent({ type: "input_audio_buffer.commit" }, "manual commit");
+      sendClientEvent({ type: "response.create" }, "trigger response after commit");
+  }, [sessionStatus, sendClientEvent]);
+  
+  // Improved toggleMic function that properly controls the microphone
+  const toggleMic = useCallback(() => {
+    const turningOn = micMuted; // If currently muted, we are turning it on
+    setMicMuted(!micMuted);
+    
+    if (sessionStatus !== 'CONNECTED' || !dcRef.current) {
+        console.log("[Audio] Cannot toggle microphone, not connected");
+        return;
+    }
+    
+    if (turningOn) {
+        console.log("[Audio] Enabling microphone (updating session with VAD)");
+        // First update session with VAD enabled
+        updateSession(false);
+        
+        // If this is the first time enabling, perform additional setup
+        if (audioContext) {
+          // Commit any existing audio buffer to ensure clean start
+          setTimeout(() => {
+            sendClientEvent({ type: "input_audio_buffer.clear" }, "clear buffer on mic enable");
+          }, 200);
+        }
+    } else {
+        console.log("[Audio] Disabling microphone (updating session without VAD)");
+        updateSession(false); // updateSession now handles VAD based on micMuted state
+    }
+  }, [micMuted, sessionStatus, updateSession, sendClientEvent, dcRef, audioContext]);
+
+  // Add effect to initialize audio context once connected
+  useEffect(() => {
+    if (sessionStatus === 'CONNECTED' && !audioContext) {
+      try {
+        // Create audio context when needed
+        const newAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+        setAudioContext(newAudioContext);
+        console.log("[Audio] Audio context initialized");
+      } catch (e) {
+        console.error("[Audio] Error initializing audio context:", e);
+      }
+    }
+  }, [sessionStatus, audioContext]);
 
   // --- Connection Management --- 
   const connectToRealtime = useCallback(async () => {
@@ -472,7 +713,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       dc.addEventListener("message", (e: MessageEvent) => {
           try {
               const serverEvent: ServerEvent = JSON.parse(e.data);
-              handleServerEventRef.current(serverEvent); // Call the handler from the hook
+              localHandleServerEventRef.current(serverEvent); // Use the local ref for the wrapped handler
           } catch (error) {
                console.error("Error parsing server event:", error, e.data);
           }
@@ -485,7 +726,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
        addTranscriptMessage(generateSafeId(), 'system', `Connection failed: ${err.message}`);
       setSessionStatus("DISCONNECTED");
     }
-  }, [sessionStatus, addTranscriptMessage, handleServerEventRef]); // Dependencies
+  }, [sessionStatus, addTranscriptMessage, localHandleServerEventRef]); // Update dependency here
 
   const disconnectFromRealtime = useCallback(() => {
     if (!pcRef.current) return;
@@ -603,6 +844,38 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       previousAgentNameRef.current = selectedAgentName;
   }, [selectedAgentName]);
 
+  // Effect to initialize properties when connected and metadata is available
+  useEffect(() => {
+    // Check if session is connected, metadata is loaded, and properties aren't already loaded
+    // Add a new flag to prevent auto-loading on startup
+    const shouldAutoLoadProperties = false; // Change to false to prevent immediate loading
+    
+    if (
+      sessionStatus === 'CONNECTED' && 
+      agentMetadata?.project_ids && 
+      agentMetadata.project_ids.length > 0 && 
+      !propertyListData && 
+      !selectedPropertyDetails &&
+      initialSessionSetupDoneRef.current && // Only after initial setup is complete
+      shouldAutoLoadProperties // Only load if we explicitly want auto-loading
+    ) {
+      console.log("[Effect] Session connected with metadata, loading properties automatically");
+      
+      // Add a small delay to ensure everything is properly initialized
+      const timer = setTimeout(() => {
+        handleGetAllProperties();
+      }, 1000);
+      
+      return () => clearTimeout(timer);
+    }
+  }, [
+    sessionStatus, 
+    agentMetadata?.project_ids, 
+    propertyListData, 
+    selectedPropertyDetails, 
+    handleGetAllProperties
+  ]);
+
   // Effect for cleanup on unmount
   useEffect(() => {
     return () => {
@@ -619,8 +892,45 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
 
    // Effect to scroll transcript to bottom
    useEffect(() => {
-       transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
-   }, [transcriptItems]);
+       // Scroll only if not showing details
+       if (!selectedPropertyDetails) {
+          transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
+       }
+   }, [transcriptItems, lastAgentTextMessage, propertyListData, selectedPropertyDetails]); // Scroll when relevant content changes
+
+  // Effect to monitor transcript for property-related queries
+  useEffect(() => {
+    // Only run if connected and there are transcript items but no properties loaded yet
+    if (
+      sessionStatus === 'CONNECTED' &&
+      transcriptItems.length > 0 &&
+      !propertyListData &&
+      !selectedPropertyDetails
+    ) {
+      // Get the last user message
+      const lastUserMessage = [...transcriptItems]
+        .filter(item => item.type === 'MESSAGE' && item.role === 'user')
+        .pop();
+      
+      if (lastUserMessage?.text) {
+        const text = lastUserMessage.text.toLowerCase();
+        // Check if it contains property-related keywords
+        const propertyRelatedKeywords = [
+          'property', 'properties', 'house', 'home', 'apartment', 'flat', 
+          'real estate', 'housing', 'buy', 'purchase', 'rent', 'view', 'show me'
+        ];
+        
+        const containsPropertyKeyword = propertyRelatedKeywords.some(keyword => 
+          text.includes(keyword.toLowerCase())
+        );
+        
+        if (containsPropertyKeyword) {
+          console.log("[Effect] Detected property-related query in user message:", text);
+          // Don't load immediately, let the button appear for explicit user choice
+        }
+      }
+    }
+  }, [transcriptItems, sessionStatus, propertyListData, selectedPropertyDetails]);
 
   // --- UI Handlers --- 
   const toggleInput = () => {
@@ -729,16 +1039,16 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
   };
 
   // --- Render --- 
-  // Placeholder: Fetch properties (replace with actual logic or agent interaction)
-   const properties: PropertyProps[] = [
-         {
-             name: "Emaar Beachfront", price: "AED 5M", area: "1,200 sqft",
-             location: { city: "Dubai", mapUrl: "#" }, mainImage: "/property1.jpg",
-             galleryImages: [{ url: "/property1.jpg", alt: "Living room" }],
-             units: [{ type: "2BR" }, { type: "3BR" }], amenities: [{ name: "Pool" }, { name: "Gym" }]
-         },
-         // Add more properties if needed
-     ];
+  // *** LOGGING POINT 5 ***
+  console.log("[Render] State before return:", { 
+      sessionStatus, 
+      showIntro, 
+      lastAgentTextMessage: lastAgentTextMessage?.substring(0, 50) + '...', // Log snippet
+      propertyListDataLength: propertyListData?.length, 
+      selectedPropertyDetails: !!selectedPropertyDetails, 
+      inputVisible, 
+      micMuted 
+  });
 
   return (
     <div
@@ -895,148 +1205,136 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       ) : (
         <>
           {/* Voice Waveform (conditional?) */}
-          {sessionStatus === 'CONNECTED' && (
+          {sessionStatus === 'CONNECTED' && !selectedPropertyDetails && (
              <div className="border-1 h-10 rounded-3xl w-72 p-4 justify-evenly ml-5 my-2 flex-shrink-0">
                <VoiceWaveform/>
              </div>
           )}
 
           {/* --- Main Content Area --- */}
-          <div className="flex-1 overflow-y-auto p-4 scrollbar-thin scrollbar-thumb-blue-700 scrollbar-track-blue-800 flex items-center justify-center">
-            {/* Show only the most recent message */}
-            {transcriptItems.length > 0 && (
-              <>
-                {/* Display only the most recent assistant message in center of screen */}
-                {transcriptItems
-                  .filter(item => item.type === 'MESSAGE' && item.role === 'assistant')
-                  .slice(-1)
-                  .map(item => (
-                    <div key={item.itemId} className="w-full">
-                      <p className="text-white text-xl font-medium italic">
-                        {item.text || (item.status === 'IN_PROGRESS' ? '...' : '')}
-                      </p>
-                    </div>
-                  ))}
-              </>
+          <div className={`flex-1 overflow-y-auto p-4 scrollbar-thin scrollbar-thumb-blue-700 scrollbar-track-blue-800 ${!propertyListData && !selectedPropertyDetails ? 'flex items-center justify-center' : 'space-y-4'}`}>
+            {/* Show Agent's Text Message */} 
+            {lastAgentTextMessage && !selectedPropertyDetails && (
+                <div className={`w-full ${propertyListData ? 'mb-4' : ''}`}>
+                    <p className="text-white text-xl font-medium italic">
+                       {lastAgentTextMessage}
+                    </p>
+                </div>
             )}
+
+            {/* Button to load properties */}
+            {!propertyListData && !selectedPropertyDetails && sessionStatus === 'CONNECTED' && (
+              <div className="flex justify-center my-4">
+                <button
+                  onClick={handleGetAllProperties}
+                  className="bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded-lg flex items-center"
+                >
+                  <span className="mr-2">View Available Properties</span>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M5 12h14M12 5l7 7-7 7"></path>
+                  </svg>
+                </button>
+              </div>
+            )}
+
+            {/* Show Property List Cards */} 
+            {propertyListData && !selectedPropertyDetails && (
+                <PropertyList 
+                    properties={propertyListData}
+                    onScheduleVisit={() => {}} // PropertyList expects this, PropertyDetails handles it now
+                    onPropertySelect={handlePropertySelect} // Pass the defined handler
+                />
+            )}
+            
+            {/* Show only User Message if no agent text/cards */} 
+            {!lastAgentTextMessage && !propertyListData && !selectedPropertyDetails && transcriptItems.length > 0 && (
+                <>
+                {transcriptItems
+                    .filter(item => item.type === 'MESSAGE' && item.role === 'user')
+                    .slice(-1)
+                    .map(item => (
+                      <div key={item.itemId} className="absolute bottom-20 right-4 max-w-[80%] bg-blue-600 p-3 rounded-xl text-sm text-white rounded-br-none">
+                        {item.text || '[Transcribing...]'}
+                      </div>
+                    ))}
+                </>
+            )}
+            
+            {/* Element to scroll to (only relevant if content might overflow) */} 
+            <div ref={transcriptEndRef} />
           </div>
 
-          {/* Current user message overlay - show only most recent user message */}
-          {transcriptItems
-            .filter(item => item.type === 'MESSAGE' && item.role === 'user')
+          {/* Property Details Overlay */} 
+          {selectedPropertyDetails && (
+              <div className="absolute inset-0 bg-blue-900 bg-opacity-50 backdrop-blur-sm flex items-center justify-center z-10 p-4">
+                  <div className="max-w-sm w-full">
+                     <PropertyDetails 
+                         {...selectedPropertyDetails} // Spread properties
+                         onClose={handleClosePropertyDetails} // Pass the defined handler
+                         onScheduleVisit={handleScheduleVisitRequest} // Pass the defined handler
+                     />
+                  </div>
+              </div>
+          )}
+          
+          {/* Current user message overlay (only if not showing details) */}
+          {!selectedPropertyDetails && transcriptItems
+            .filter(item => item.type === 'MESSAGE' && item.role === 'user' && item.status === 'IN_PROGRESS') // Show only in-progress user transcript
             .slice(-1)
             .map(item => (
-              <div key={item.itemId} className="absolute bottom-20 right-4 max-w-[80%] bg-blue-600 p-3 rounded-xl text-sm text-white rounded-br-none">
+              <div key={item.itemId} className="absolute bottom-20 right-4 max-w-[80%] bg-blue-600 p-3 rounded-xl text-sm text-white rounded-br-none z-20">
                 {item.text || '[Transcribing...]'}
               </div>
             ))}
-
-          {/* Existing UI for properties/appointments (conditional rendering) */}
-          {appointment && selectedProperty && (
-            <div className="absolute inset-0 bg-blue-900 bg-opacity-90 flex items-center justify-center z-10 p-4">
-              <PropertyConfirmation
-                onClose={handleCloseConfirmation}
-                selectedTime={selectedTime || ""}
-                selectedDay={selectedDay}
-                onConfirm={handleConfirmBooking}
-                property={selectedProperty}
-              />
-            </div>
-          )}
-          
-          {showProperties && (
-            <div className="absolute inset-0 bg-blue-900 bg-opacity-90 flex items-center justify-center z-10 p-4 overflow-auto">
-              <button onClick={() => setShowProperties(false)} className="absolute top-4 right-4 p-2 bg-red-500 rounded-full z-20">
-                <X size={18}/>
-              </button>
-              <PropertyList properties={properties} onScheduleVisit={handleScheduleVisit}/>
-            </div>
-          )}
-          
-          {isConfirmed && selectedProperty && (
-            <div className="absolute inset-0 bg-blue-900 bg-opacity-95 flex items-center justify-center z-10 p-4">
-              <AppointmentConfirmed 
-                onClose={handleReset} 
-                property={selectedProperty}
-                date={selectedDay}
-                time={selectedTime || ""}
-              />
-            </div>
-          )}
 
           {/* --- Bottom Controls Area --- */}
           <div className="mt-auto flex-shrink-0 z-20">
             <AnimatePresence>
               {inputVisible && (
                 <motion.div
-                  initial={{ y: 60 }}
-                  animate={{ y: 0 }}
-                  exit={{ y: 60 }}
+                  initial={{ y: 60 }} animate={{ y: 0 }} exit={{ y: 60 }}
                   transition={{ type: "spring", stiffness: 300, damping: 30 }}
                   className="rounded-xl w-[320px] -mb-1 ml-1 h-[48px] shadow-lg bg-[#47679D]"
                 >
                   <div className="flex items-center justify-between w-full px-4 py-2 rounded-lg">
                     <input
-                      ref={inputRef}
-                      type="text"
-                      value={inputValue}
-                      onChange={(e) => setInputValue(e.target.value)}
-                      onKeyDown={handleKeyDown}
+                      ref={inputRef} type="text" value={inputValue}
+                      onChange={(e) => setInputValue(e.target.value)} onKeyDown={handleKeyDown}
                       placeholder={sessionStatus === 'CONNECTED' ? "Type your message..." : "Connect call to type"}
                       className="flex-1 mt-1 bg-transparent outline-none text-white placeholder:text-white placeholder:opacity-50 text-sm"
                       disabled={sessionStatus !== 'CONNECTED'}
                     />
-                    <button 
-                      onClick={handleSend} 
-                      className="ml-2 mt-1 text-white disabled:opacity-50"
-                      disabled={sessionStatus !== 'CONNECTED' || !inputValue.trim()}
-                    >
-                      <Send size={18} />
-                    </button>
+                    <button onClick={handleSend} className="ml-2 mt-1 text-white disabled:opacity-50" disabled={sessionStatus !== 'CONNECTED' || !inputValue.trim()}> <Send size={18} /> </button>
                   </div>
                 </motion.div>
               )}
             </AnimatePresence>
 
-            {/* Button Bar */}
+            {/* Button Bar */} 
             <div className="flex justify-between items-center p-3 bg-blue-900">
-              <button onClick={toggleInput} className="bg-[#47679D] p-3 rounded-full hover:bg-blue-600 transition-colors">
-                <MessageSquare size={20} />
-              </button>
-
+              <button onClick={toggleInput} className="bg-[#47679D] p-3 rounded-full hover:bg-blue-600 transition-colors"> <MessageSquare size={20} /> </button>
               {/* Placeholder dots */}
-              <div className="flex justify-center space-x-1">
-                {Array(15).fill(0).map((_, i) => (
-                  <div key={i} className="w-1 h-1 bg-white rounded-full opacity-50"></div>
-                ))}
-              </div>
-
+              <div className="flex justify-center space-x-1"> {Array(15).fill(0).map((_, i) => (<div key={i} className="w-1 h-1 bg-white rounded-full opacity-50"></div>))} </div>
               <button 
                 onClick={toggleMic} 
                 className={`p-3 rounded-full transition-colors ${micMuted ? 'bg-gray-600' : 'bg-[#47679D] hover:bg-blue-600'}`}
                 disabled={sessionStatus !== 'CONNECTED'}
-                title={micMuted ? "Microphone Off - Click to enable" : "Microphone On - Click to disable"}
-              >
-                {micMuted ? <MicOff size={20} /> : <Mic size={20} />}
-              </button>
-
-              {/* Call Button */}
+                title={micMuted ? "Mic Off" : "Mic On"}
+              > {micMuted ? <MicOff size={20} /> : <Mic size={20} />} </button>
+              {/* Call Button */} 
               <button 
                 onClick={handleCallButtonClick}
                 className={`${sessionStatus === 'CONNECTED' ? 'bg-red-500 hover:bg-red-600' : 'bg-green-500 hover:bg-green-600'} p-3 rounded-full transition-colors disabled:opacity-70`}
                 disabled={sessionStatus === 'CONNECTING' || (!chatbotId && sessionStatus === 'DISCONNECTED')}
               >
-                {sessionStatus === 'CONNECTING' ? <Loader size={18} className="animate-spin"/> : 
-                 sessionStatus === 'CONNECTED' ? <PhoneOff size={18} /> : 
-                 <Phone size={18} />
-                }
+                {sessionStatus === 'CONNECTING' ? <Loader size={18} className="animate-spin"/> : sessionStatus === 'CONNECTED' ? <PhoneOff size={18} /> : <Phone size={18} />} 
               </button>
             </div>
           </div>
         </>
       )}
       
-      {/* Hidden Audio Element */}
+      {/* Hidden Audio Element */} 
       <audio ref={audioElementRef} playsInline />
     </div>
   )
