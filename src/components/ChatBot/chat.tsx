@@ -129,8 +129,8 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
               setPropertyListData(properties); 
               setSelectedPropertyDetails(null); 
           } 
-          // Removed the else block that was clearing propertyListData
-          // Only set properties if they exist, don't clear them for text messages
+          // Never clear propertyListData for text messages, we want to keep them displayed
+          // if the user is already viewing the properties
       }
       
       setTranscriptItems((prev) => {
@@ -269,23 +269,61 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       if (result.properties && Array.isArray(result.properties) && result.properties.length > 0) {
         // Process and validate property data before setting state
         const validatedProperties = result.properties.map((property: any) => {
+          // Edge function returns data in a different format than our components expect
+          // Process the images array into mainImage and galleryImages format
+          let mainImage = "/placeholder.svg";
+          let galleryImages: PropertyImage[] = [];
+          
+          if (property.images && Array.isArray(property.images) && property.images.length > 0) {
+            // Use the first image as main image if available
+            if (property.images[0].url) {
+              mainImage = property.images[0].url;
+            }
+            // Use the rest as gallery images
+            if (property.images.length > 1) {
+              galleryImages = property.images.slice(1).map((img: any) => {
+                return { url: img.url, alt: img.alt || `${property.name} image` };
+              });
+            }
+          }
+          
+          // Handle amenities format conversion
+          const amenitiesArray = Array.isArray(property.amenities) 
+            ? property.amenities.map((amenity: any) => {
+                if (typeof amenity === 'string') {
+                  return { name: amenity };
+                }
+                return amenity;
+              })
+            : [];
+            
+          // Handle units format conversion  
+          const unitsArray = Array.isArray(property.units)
+            ? property.units.map((unit: any) => {
+                if (typeof unit === 'string') {
+                  return { type: unit };
+                }
+                return unit;
+              })
+            : [];
+          
           // Ensure we have valid data for each property
           return {
-            ...property,
             id: property.id || generateSafeId(),
             name: property.name || "Property",
             price: property.price || "Price unavailable",
             area: property.area || "Area unavailable",
-            mainImage: property.mainImage || "/placeholder.svg",
+            mainImage: mainImage,
             location: {
               city: property.location?.city || "Location unavailable",
               mapUrl: property.location?.mapUrl || "",
+              coords: property.location?.coords || ""
             },
-            // Ensure other properties have defaults
-            galleryImages: Array.isArray(property.galleryImages) ? 
-              property.galleryImages.filter((img: any) => img && img.url) : [],
-            units: Array.isArray(property.units) ? property.units : [],
-            amenities: Array.isArray(property.amenities) ? property.amenities : [],
+            galleryImages: galleryImages,
+            units: unitsArray,
+            amenities: amenitiesArray,
+            description: property.description || "No description available",
+            websiteUrl: property.websiteUrl || ""
           };
         });
         
@@ -351,18 +389,58 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
 
                 // Check for the properties array - data should now be correctly formatted
                 if (outputData.properties && Array.isArray(outputData.properties)) {
-                    console.log("[handleServerEvent] Correctly formatted properties array found in function output.");
+                    console.log("[handleServerEvent] Properties array found in function output.");
                     
-                    // Always directly set propertyListData for immediate rendering
-                    const correctlyFormattedProperties: PropertyProps[] = outputData.properties;
-                    console.log("[handleServerEvent] Setting propertyListData directly:", correctlyFormattedProperties);
-                    setPropertyListData(correctlyFormattedProperties);
+                    // Process the raw edge function response format into our component format
+                    const formattedProperties = outputData.properties.map((property: any) => {
+                       // Handle amenities format conversion
+                      const amenitiesArray = Array.isArray(property.amenities) 
+                        ? property.amenities.map((amenity: any) => {
+                            if (typeof amenity === 'string') {
+                              return { name: amenity };
+                            }
+                            return amenity;
+                          })
+                        : [];
+                        
+                      // Handle units format conversion  
+                      const unitsArray = Array.isArray(property.units)
+                        ? property.units.map((unit: any) => {
+                            if (typeof unit === 'string') {
+                              return { type: unit };
+                            }
+                            return unit;
+                          })
+                        : [];
+                      
+                      // Construct the property object in the format our components expect
+                      return {
+                        id: property.id || generateSafeId(),
+                        name: property.name || "Property",
+                        price: property.price || "Price unavailable",
+                        area: property.area || "Area unavailable",
+                        mainImage: "/placeholder.svg", // Use placeholder as no images are available
+                        location: {
+                          city: property.location?.city || "Location unavailable",
+                          mapUrl: property.location?.mapUrl || "",
+                          coords: property.location?.coords || ""
+                        },
+                        galleryImages: [], // Empty gallery as data shows empty images array
+                        units: unitsArray,
+                        amenities: amenitiesArray,
+                        description: property.description || "No description available",
+                        websiteUrl: property.websiteUrl || ""
+                      };
+                    });
+                    
+                    console.log("[handleServerEvent] Formatted properties:", formattedProperties);
+                    setPropertyListData(formattedProperties);
                     
                     // Then also add a transcript message with the properties
                     const messageText = outputData.message || "Here are the properties I found.";
                     const newItemId = itemId || generateSafeId(); 
                     console.log(`[handleServerEvent] Adding transcript message with properties. itemId: ${newItemId}`);
-                    addTranscriptMessage(newItemId, 'assistant', messageText, correctlyFormattedProperties);
+                    addTranscriptMessage(newItemId, 'assistant', messageText, formattedProperties);
                     updateTranscriptItemStatus(newItemId, 'DONE'); 
                     propertiesHandledLocally = true; 
                 } 
@@ -399,8 +477,9 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
   }, [
       addTranscriptMessage, 
       updateTranscriptItemStatus, 
-      handleServerEventRefFromHook 
-    ]); 
+      handleServerEventRefFromHook,
+      generateSafeId // Add generateSafeId to dependencies
+    ]);
 
   // Ref part remains the same
   const localHandleServerEventRef = useRef(handleServerEvent);
@@ -905,7 +984,8 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       sessionStatus === 'CONNECTED' &&
       transcriptItems.length > 0 &&
       !propertyListData &&
-      !selectedPropertyDetails
+      !selectedPropertyDetails &&
+      initialSessionSetupDoneRef.current // Only after initial setup is complete
     ) {
       // Get the last user message
       const lastUserMessage = [...transcriptItems]
@@ -926,11 +1006,19 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
         
         if (containsPropertyKeyword) {
           console.log("[Effect] Detected property-related query in user message:", text);
-          // Don't load immediately, let the button appear for explicit user choice
+          // Load properties automatically when user asks about them
+          handleGetAllProperties();
         }
       }
     }
-  }, [transcriptItems, sessionStatus, propertyListData, selectedPropertyDetails]);
+  }, [
+    transcriptItems, 
+    sessionStatus, 
+    propertyListData, 
+    selectedPropertyDetails, 
+    handleGetAllProperties, 
+    initialSessionSetupDoneRef
+  ]);
 
   // --- UI Handlers --- 
   const toggleInput = () => {
@@ -1220,21 +1308,6 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
                        {lastAgentTextMessage}
                     </p>
                 </div>
-            )}
-
-            {/* Button to load properties */}
-            {!propertyListData && !selectedPropertyDetails && sessionStatus === 'CONNECTED' && (
-              <div className="flex justify-center my-4">
-                <button
-                  onClick={handleGetAllProperties}
-                  className="bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded-lg flex items-center"
-                >
-                  <span className="mr-2">View Available Properties</span>
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M5 12h14M12 5l7 7-7 7"></path>
-                  </svg>
-                </button>
-              </div>
             )}
 
             {/* Show Property List Cards */} 
