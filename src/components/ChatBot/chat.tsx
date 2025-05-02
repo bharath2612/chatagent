@@ -393,6 +393,24 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
                     
                     // Process the raw edge function response format into our component format
                     const formattedProperties = outputData.properties.map((property: any) => {
+                       // --- START IMAGE PROCESSING ---
+                       let mainImage = "/placeholder.svg";
+                       let galleryImages: PropertyImage[] = [];
+                       
+                       if (property.images && Array.isArray(property.images) && property.images.length > 0) {
+                         // Use the first image as main image if available
+                         if (property.images[0].url) {
+                           mainImage = property.images[0].url;
+                         }
+                         // Use the rest as gallery images
+                         if (property.images.length > 1) {
+                           galleryImages = property.images.slice(1).map((img: any) => {
+                             return { url: img.url, alt: img.alt || `${property.name} image` };
+                           });
+                         }
+                       }
+                       // --- END IMAGE PROCESSING ---
+
                        // Handle amenities format conversion
                       const amenitiesArray = Array.isArray(property.amenities) 
                         ? property.amenities.map((amenity: any) => {
@@ -419,13 +437,13 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
                         name: property.name || "Property",
                         price: property.price || "Price unavailable",
                         area: property.area || "Area unavailable",
-                        mainImage: "/placeholder.svg", // Use placeholder as no images are available
+                        mainImage: mainImage,
                         location: {
                           city: property.location?.city || "Location unavailable",
                           mapUrl: property.location?.mapUrl || "",
                           coords: property.location?.coords || ""
                         },
-                        galleryImages: [], // Empty gallery as data shows empty images array
+                        galleryImages: galleryImages,
                         units: unitsArray,
                         amenities: amenitiesArray,
                         description: property.description || "No description available",
@@ -437,11 +455,19 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
                     setPropertyListData(formattedProperties);
                     
                     // Then also add a transcript message with the properties
-                    const messageText = outputData.message || "Here are the properties I found.";
+                    // --- START UPDATED MESSAGE TEXT ---
+                    const propertyCount = formattedProperties.length;
+                    const messageText = propertyCount > 0 
+                        ? `Here ${propertyCount === 1 ? 'is' : 'are'} ${propertyCount} propert${propertyCount === 1 ? 'y' : 'ies'} I found.`
+                        : "I couldn't find any properties matching your request.";
+                    // --- END UPDATED MESSAGE TEXT ---
+                    
                     const newItemId = itemId || generateSafeId(); 
-                    console.log(`[handleServerEvent] Adding transcript message with properties. itemId: ${newItemId}`);
-                    addTranscriptMessage(newItemId, 'assistant', messageText, formattedProperties);
-                    updateTranscriptItemStatus(newItemId, 'DONE'); 
+                    console.log(`[handleServerEvent] Adding transcript message with properties. itemId: ${newItemId}, text: ${messageText}`);
+                    // Add message FIRST, then update status
+                    addTranscriptMessage(newItemId, 'assistant', messageText, formattedProperties); 
+                    // Ensure the item status is updated to DONE once properties are processed
+                    updateTranscriptItemStatus(newItemId, 'DONE');
                     propertiesHandledLocally = true; 
                 } 
                 else {
@@ -1300,17 +1326,8 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
           )}
 
           {/* --- Main Content Area --- */}
-          <div className={`flex-1 overflow-y-auto p-4 scrollbar-thin scrollbar-thumb-blue-700 scrollbar-track-blue-800 ${!propertyListData && !selectedPropertyDetails ? 'flex items-center justify-center' : 'space-y-4'}`}>
-            {/* Show Agent's Text Message */} 
-            {lastAgentTextMessage && !selectedPropertyDetails && (
-                <div className={`w-full ${propertyListData ? 'mb-4' : ''}`}>
-                    <p className="text-white text-xl font-medium italic">
-                       {lastAgentTextMessage}
-                    </p>
-                </div>
-            )}
-
-            {/* Show Property List Cards */} 
+          <div className={`flex-1 overflow-y-auto p-4 scrollbar-thin scrollbar-thumb-blue-700 scrollbar-track-blue-800 ${!propertyListData && !selectedPropertyDetails && transcriptItems.length === 0 ? 'flex items-center justify-center' : 'space-y-4'}`}>
+            {/* Show Property List Cards (Priority) */} 
             {propertyListData && !selectedPropertyDetails && (
                 <PropertyList 
                     properties={propertyListData}
@@ -1319,8 +1336,17 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
                 />
             )}
             
+            {/* Show Agent's Text Message ONLY IF no property list is shown */}
+            {lastAgentTextMessage && !propertyListData && !selectedPropertyDetails && (
+                <div className="w-full mb-4">
+                    <p className="text-white text-xl font-medium italic">
+                       {lastAgentTextMessage}
+                    </p>
+                </div>
+            )}
+            
             {/* Show only User Message if no agent text/cards */} 
-            {!lastAgentTextMessage && !propertyListData && !selectedPropertyDetails && transcriptItems.length > 0 && (
+            {!lastAgentTextMessage && !propertyListData && !selectedPropertyDetails && transcriptItems.length > 0 && transcriptItems.filter(item => item.type === 'MESSAGE' && item.role === 'user').length > 0 && (
                 <>
                 {transcriptItems
                     .filter(item => item.type === 'MESSAGE' && item.role === 'user')
