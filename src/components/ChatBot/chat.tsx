@@ -10,6 +10,11 @@ import PropertyList from "../PropertyComponents/PropertyList"
 import PropertyDetails from "../PropertyComponents/propertyDetails"
 import { VoiceWaveform } from "./VoiceWaveForm"
 
+// --- Appointment UI Components ---
+import TimePick from "../Appointment/timePick";
+import Confirmations from "../Appointment/Confirmations"; 
+import BookingConfirmation from "../Appointment/BookingConfirmation";
+
 // Agent Logic Imports
 import { 
     SessionStatus, 
@@ -75,6 +80,10 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
   const [selectedTime, setSelectedTime] = useState<string | null>(null)
   const [isConfirmed, setIsConfirmed] = useState<boolean>(false)
   
+  // --- Scheduling Flow State ---
+  const [showTimeSlots, setShowTimeSlots] = useState<boolean>(false);
+  const [availableSlots, setAvailableSlots] = useState<Record<string, string[]>>({});
+
   // --- New Intro Screen State ---
   const [showIntro, setShowIntro] = useState(true)
   const [selectedLanguage, setSelectedLanguage] = useState("English")
@@ -349,19 +358,70 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
     }
   }, [selectedAgentConfigSet, agentMetadata, addTranscriptMessage, generateSafeId, propertyListData]);
 
-  // Handler for the schedule button inside PropertyDetails
+  // Fix the stopCurrentResponse function with the correct event type
+  const stopCurrentResponse = (sendClientEvent: (eventObj: any, eventNameSuffix?: string) => void) => {
+    console.log("[Audio] Stopping current response");
+    sendClientEvent({ type: "response.cancel" }, "(canceling current response)");
+    sendClientEvent({ type: "output_audio_buffer.clear" }, "(clearing audio buffer)");
+  };
+
+  // Updated Send Handler
+  const handleSend = useCallback(() => {
+    const textToSend = inputValue.trim();
+    if (!textToSend || sessionStatus !== 'CONNECTED' || !dcRef.current) return;
+
+    // Stop any current response/audio first
+    stopCurrentResponse(sendClientEvent);
+
+    console.log(`[Send Text] Sending: "${textToSend}"`);
+    const userMessageId = generateSafeId();
+
+    // Add user message optimistically to transcript
+    addTranscriptMessage(userMessageId, 'user', textToSend);
+
+    // Send message event to server
+    sendClientEvent(
+      {
+        type: "conversation.item.create",
+        item: {
+          id: userMessageId,
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: textToSend }],
+        },
+      },
+      "(user text message)"
+    );
+    setInputValue("");
+
+    // Trigger agent response
+    sendClientEvent({ type: "response.create" }, "(trigger response)");
+
+  }, [inputValue, sessionStatus, sendClientEvent, addTranscriptMessage]);
+
+  // Updated Send Handler
   const handleScheduleVisitRequest = (property: PropertyProps) => {
-      console.log(`[UI] Schedule visit requested for: ${property.name}`);
-      setSelectedPropertyDetails(null); // Close details modal
-      
-      const scheduleMessage = `I'd like to schedule a visit for ${property.name}.`;
-      const userMessageId = generateSafeId();
-      addTranscriptMessage(userMessageId, 'user', scheduleMessage);
-      sendClientEvent(
-        { type: "conversation.item.create", item: { id: userMessageId, type: "message", role: "user", content: [{ type: "input_text", text: scheduleMessage }] } },
-        "(schedule request from UI)"
-      );
-      sendClientEvent({ type: "response.create" }, "(trigger response after schedule request)");
+    console.log(`[UI] Schedule visit requested for: ${property.name} (${property.id})`);
+    setSelectedProperty(property); // Set the target property first
+    
+    // Stop any current response/audio first
+    stopCurrentResponse(sendClientEvent);
+
+    const scheduleMessage = `Yes, I'd like to schedule a visit for ${property.name}.`;
+    const userMessageId = generateSafeId();
+    
+    // Send events FIRST while the component state related to the modal is stable
+    sendClientEvent(
+      { type: "conversation.item.create", item: { id: userMessageId, type: "message", role: "user", content: [{ type: "input_text", text: scheduleMessage }] } },
+      "(schedule request from UI)"
+    );
+    sendClientEvent({ type: "response.create" }, "(trigger response after schedule request)");
+    
+    // Add message to local transcript AFTER sending
+    addTranscriptMessage(userMessageId, 'user', scheduleMessage);
+    
+    // Now, close the details modal, which will trigger re-renders
+    setSelectedPropertyDetails(null); 
   };
 
   // --- Handle Server Events (Wrap the hook's handler) --- 
@@ -374,112 +434,122 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
     // --- Handle Function Call Output --- 
     if (
       serverEvent.type === "conversation.item.created" &&
-      serverEvent.item?.type === "function_call_output" &&
-      (serverEvent.item as any).name === "getProjectDetails" &&
-      !propertyListData
+      serverEvent.item?.type === "function_call_output"
     ) {
-        const functionOutputItem = serverEvent.item as { id?: string; type: string; output?: string }; 
-        console.log("[handleServerEvent] Detected function_call_output item.");
-        const outputString = functionOutputItem?.output; 
-        const itemId = functionOutputItem?.id;
+        const functionOutputItem = serverEvent.item as any;
+        const functionName = functionOutputItem.name;
 
-        if (outputString) {
-             try {
-                console.log("[handleServerEvent] Parsing function_call_output string:", outputString);
-                const outputData = JSON.parse(outputString);
-                console.log("[handleServerEvent] Parsed outputData:", outputData);
+        // Handle getProjectDetails
+        if (functionName === "getProjectDetails") {
+            console.log("[handleServerEvent] Detected function_call_output item for getProjectDetails.");
+            // Only process if propertyListData is currently null
+            if (!propertyListData) {
+                const outputString = functionOutputItem?.output;
+                const itemId = functionOutputItem?.id;
+                if (outputString) {
+                    try {
+                        const outputData = JSON.parse(outputString);
+                        if (outputData.properties && Array.isArray(outputData.properties)) {
+                            // Process properties (map to PropertyProps) - Copy existing mapping logic here
+                            const formattedProperties = outputData.properties.map((property: any) => {
+                                // Edge function returns data in a different format than our components expect
+                                // Process the images array into mainImage and galleryImages format
+                                let mainImage = "/placeholder.svg";
+                                let galleryImages: PropertyImage[] = [];
+                                
+                                if (property.images && Array.isArray(property.images) && property.images.length > 0) {
+                                    if (property.images[0].url) mainImage = property.images[0].url;
+                                    if (property.images.length > 1) galleryImages = property.images.slice(1).map((img: any) => ({ url: img.url, alt: img.alt || `${property.name} image` }));
+                                }
+                                const amenitiesArray = Array.isArray(property.amenities) ? property.amenities.map((amenity: any) => (typeof amenity === 'string' ? { name: amenity } : amenity)) : [];
+                                const unitsArray = Array.isArray(property.units) ? property.units.map((unit: any) => (typeof unit === 'string' ? { type: unit } : unit)) : [];
 
-                // Check for the properties array - data should now be correctly formatted
-                if (outputData.properties && Array.isArray(outputData.properties)) {
-                    console.log("[handleServerEvent] Properties array found in function output.");
-                    
-                    // Process the raw edge function response format into our component format
-                    const formattedProperties = outputData.properties.map((property: any) => {
-                       // --- START IMAGE PROCESSING ---
-                       let mainImage = "/placeholder.svg";
-                       let galleryImages: PropertyImage[] = [];
-                       
-                       if (property.images && Array.isArray(property.images) && property.images.length > 0) {
-                         // Use the first image as main image if available
-                         if (property.images[0].url) {
-                           mainImage = property.images[0].url;
-                         }
-                         // Use the rest as gallery images
-                         if (property.images.length > 1) {
-                           galleryImages = property.images.slice(1).map((img: any) => {
-                             return { url: img.url, alt: img.alt || `${property.name} image` };
-                           });
-                         }
-                       }
-                       // --- END IMAGE PROCESSING ---
-
-                       // Handle amenities format conversion
-                      const amenitiesArray = Array.isArray(property.amenities) 
-                        ? property.amenities.map((amenity: any) => {
-                            if (typeof amenity === 'string') {
-                              return { name: amenity };
-                            }
-                            return amenity;
-                          })
-                        : [];
-                        
-                      // Handle units format conversion  
-                      const unitsArray = Array.isArray(property.units)
-                        ? property.units.map((unit: any) => {
-                            if (typeof unit === 'string') {
-                              return { type: unit };
-                            }
-                            return unit;
-                          })
-                        : [];
-                      
-                      // Construct the property object in the format our components expect
-                      return {
-                        id: property.id || generateSafeId(),
-                        name: property.name || "Property",
-                        price: property.price || "Price unavailable",
-                        area: property.area || "Area unavailable",
-                        mainImage: mainImage,
-                        location: {
-                          city: property.location?.city || "Location unavailable",
-                          mapUrl: property.location?.mapUrl || "",
-                          coords: property.location?.coords || ""
-                        },
-                        galleryImages: galleryImages,
-                        units: unitsArray,
-                        amenities: amenitiesArray,
-                        description: property.description || "No description available",
-                        websiteUrl: property.websiteUrl || ""
-                      };
-                    });
-                    
-                    console.log("[handleServerEvent] Formatted properties:", formattedProperties);
-                    setPropertyListData(formattedProperties);
-                    
-                    // Then also add a transcript message with the properties
-                    // --- START UPDATED MESSAGE TEXT ---
-                    const propertyCount = formattedProperties.length;
-                    const messageText = propertyCount > 0 
-                        ? `Here ${propertyCount === 1 ? 'is' : 'are'} ${propertyCount} propert${propertyCount === 1 ? 'y' : 'ies'} I found.`
-                        : "I couldn't find any properties matching your request.";
-                    // --- END UPDATED MESSAGE TEXT ---
-                    
-                    const newItemId = itemId || generateSafeId(); 
-                    console.log(`[handleServerEvent] Adding transcript message with properties. itemId: ${newItemId}, text: ${messageText}`);
-                    // Add message FIRST, then update status
-                    addTranscriptMessage(newItemId, 'assistant', messageText, formattedProperties); 
-                    // Ensure the item status is updated to DONE once properties are processed
-                    updateTranscriptItemStatus(newItemId, 'DONE');
-                    propertiesHandledLocally = true; 
-                } 
-                else {
-                    console.log("[handleServerEvent] Parsed function output, but 'properties' array not found or not an array.");
+                                return {
+                                    id: property.id || generateSafeId(),
+                                    name: property.name || "Property",
+                                    price: property.price || "Price unavailable",
+                                    area: property.area || "Area unavailable",
+                                    mainImage: mainImage,
+                                    location: { city: property.location?.city || "Location unavailable", mapUrl: property.location?.mapUrl || "", coords: property.location?.coords || "" },
+                                    galleryImages: galleryImages,
+                                    units: unitsArray,
+                                    amenities: amenitiesArray,
+                                    description: property.description || "No description available",
+                                    websiteUrl: property.websiteUrl || ""
+                                };
+                            });
+                            console.log("[handleServerEvent] Formatted properties:", formattedProperties);
+                            setPropertyListData(formattedProperties);
+                            const propertyCount = formattedProperties.length;
+                            const messageText = propertyCount > 0 ? `Here ${propertyCount === 1 ? 'is' : 'are'} ${propertyCount} propert${propertyCount === 1 ? 'y' : 'ies'} I found.` : "I couldn't find any properties matching your request.";
+                            const newItemId = itemId || generateSafeId();
+                            addTranscriptMessage(newItemId, 'assistant', messageText, formattedProperties); // Add message AFTER setting state
+                            updateTranscriptItemStatus(newItemId, 'DONE');
+                            propertiesHandledLocally = true;
+                        } else {
+                            console.log("[handleServerEvent] Parsed function output, but 'properties' array not found or not an array.");
+                        }
+                    } catch (e) {
+                        console.warn("[handleServerEvent] Error parsing getProjectDetails output:", e, outputString);
+                    }
+                } else {
+                    console.log("[handleServerEvent] getProjectDetails function_call_output item has no output string.");
                 }
-            } catch (e) {
-                console.warn("[handleServerEvent] Error parsing function call output JSON:", e, outputString);
+            } else {
+                console.log("[handleServerEvent] propertyListData already exists, skipping processing for getProjectDetails output.");
+                propertiesHandledLocally = true; // Mark as handled to prevent hook processing
             }
-        } else {
-            console.log("[handleServerEvent] function_call_output item has no output string.");
+        } else if (functionName === "getAvailableSlots") {
+            console.log("[handleServerEvent] Detected function_call_output for getAvailableSlots.");
+            const outputString = functionOutputItem.output;
+            if (outputString) {
+                try {
+                    const outputData = JSON.parse(outputString);
+                    if (outputData.slots) {
+                        console.log("[UI] Received slots:", outputData.slots);
+                        setAvailableSlots(outputData.slots);
+                        setShowTimeSlots(true); // Show the time slot picker
+                        
+                        // If we don't have a selectedProperty yet, create a basic one
+                        if (!selectedProperty && outputData.property_id) {
+                          console.log("[UI] Creating placeholder property with ID:", outputData.property_id);
+                          setSelectedProperty({
+                            id: outputData.property_id,
+                            name: "Selected Property",
+                            // Basic minimum property data
+                          });
+                        }
+                        
+                        propertiesHandledLocally = true; // Mark as handled
+                    }
+                } catch (e) {
+                    console.warn("[handleServerEvent] Error parsing getAvailableSlots output:", e);
+                }
+            }
+        } else if (functionName === "scheduleVisit") {
+            console.log("[handleServerEvent] Detected function_call_output for scheduleVisit.");
+            const outputString = functionOutputItem.output;
+            if (outputString) {
+                try {
+                    const outputData = JSON.parse(outputString);
+                    // The UI flow is handled within TimePick/BookingConfirmation/AppointmentConfirmed
+                    // We just need to know if it was successful to potentially hide the picker if it's still open
+                    if (outputData.success === true) {
+                        console.log("[UI] Booking successful reported by agent.");
+                        setShowTimeSlots(false); // Hide slots if booking is done
+                        propertiesHandledLocally = true;
+                    } else if (outputData.error) {
+                        // Maybe show an error message?
+                        console.error("[UI] Agent reported scheduling error:", outputData.error);
+                        setShowTimeSlots(false); // Hide slots on error too
+                        // Optionally add error message to transcript
+                        addTranscriptMessage(generateSafeId(), 'system', `Scheduling Error: ${outputData.error}`);
+                        propertiesHandledLocally = true;
+                    }
+                } catch (e) {
+                    console.warn("[handleServerEvent] Error parsing scheduleVisit output:", e);
+                }
+            }
         }
     }
     
@@ -1018,11 +1088,16 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
     // Only run if connected and there are transcript items but no properties loaded yet
     if (
       sessionStatus === 'CONNECTED' &&
-      transcriptItems.length > 0 &&
       !propertyListData &&
       !selectedPropertyDetails &&
       initialSessionSetupDoneRef.current // Only after initial setup is complete
     ) {
+      // Get the last user message - still need transcriptItems here!
+      // Re-thinking: Removing transcriptItems dependency was wrong if we check the last message.
+      // The core issue is re-triggering handleGetAllProperties which adds a message.
+      // Let's keep transcriptItems dependency BUT prevent the loop inside.
+      if (transcriptItems.length === 0) return; // Don't run if no transcript yet
+
       // Get the last user message
       const lastUserMessage = [...transcriptItems]
         .filter(item => item.type === 'MESSAGE' && item.role === 'user')
@@ -1030,6 +1105,21 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       
       if (lastUserMessage?.text) {
         const text = lastUserMessage.text.toLowerCase();
+        
+        // Add a check to see if the last message was already processed by this effect
+        // This requires storing the ID of the last processed message.
+        // For now, a simpler check: Is the *very last* item in the transcript
+        // one of the messages added BY handleGetAllProperties?
+        const veryLastItem = transcriptItems[transcriptItems.length - 1];
+        const isLoadingMessage = veryLastItem?.role === 'system' && veryLastItem?.text === 'Loading properties...';
+        const isResultsMessage = veryLastItem?.role === 'assistant' && veryLastItem?.text?.includes('properties I found');
+        const isErrorMessage = veryLastItem?.role === 'system' && veryLastItem?.text?.startsWith('Error loading properties');
+
+        if (isLoadingMessage || isResultsMessage || isErrorMessage) {
+           console.log("[Effect Check] Skipping keyword check as last message seems related to property loading.");
+           return; // Don't re-run if the last message is from the loading process
+        }
+        
         // Check if it contains property-related keywords
         const propertyRelatedKeywords = [
           'property', 'properties', 'house', 'home', 'apartment', 'flat', 
@@ -1052,9 +1142,44 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
     sessionStatus, 
     propertyListData, 
     selectedPropertyDetails, 
-    handleGetAllProperties, 
-    initialSessionSetupDoneRef
+    handleGetAllProperties, // handleGetAllProperties itself should be stable due to useCallback
+    initialSessionSetupDoneRef // initialSessionSetupDoneRef should be stable
   ]);
+
+  // Add useEffect to monitor agent changes and display the scheduling UI
+  useEffect(() => {
+    // Check if we've switched to the scheduling agent
+    if (selectedAgentName === "scheduleMeeting") {
+      console.log("[Agent Change] Detected switch to scheduleMeeting agent - showing scheduling UI");
+      
+      // If we have a selected property, show the time slots right away
+      if (selectedProperty) {
+        console.log("[Agent Change] Have selected property, showing time slots directly");
+        
+        // Wait for the next tick to ensure agent change is completed
+        setTimeout(() => {
+          // If slots are not available yet, the agent will fetch them
+          // But we can proactively show the time picker UI
+          if (Object.keys(availableSlots).length === 0) {
+            console.log("[Agent Change] No slots available yet, showing empty slot UI until agent provides them");
+            // Show empty slots until they're populated
+            setAvailableSlots({
+              "Loading...": ["Please wait..."]
+            });
+          }
+          setShowTimeSlots(true);
+        }, 100);
+      } else {
+        console.log("[Agent Change] No selected property yet, waiting for agent to get slots");
+        // The agent will need to fetch slots via getAvailableSlots first
+      }
+    } else if (selectedAgentName === "realEstate" && showTimeSlots) {
+      // If we switched back to realEstate agent and time slots were showing,
+      // this means a booking was completed or cancelled
+      console.log("[Agent Change] Back to realEstate agent, hiding scheduling UI");
+      setShowTimeSlots(false);
+    }
+  }, [selectedAgentName, selectedProperty, availableSlots]);
 
   // --- UI Handlers --- 
   const toggleInput = () => {
@@ -1065,37 +1190,6 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       }, 300)
     }
   }
-
-  // Updated Send Handler
-  const handleSend = useCallback(() => {
-    const textToSend = inputValue.trim();
-    if (!textToSend || sessionStatus !== 'CONNECTED' || !dcRef.current) return;
-
-    console.log(`[Send Text] Sending: "${textToSend}"`);
-    const userMessageId = generateSafeId();
-
-    // Add user message optimistically to transcript
-     addTranscriptMessage(userMessageId, 'user', textToSend);
-
-    // Send message event to server
-    sendClientEvent(
-      {
-        type: "conversation.item.create",
-        item: {
-          id: userMessageId,
-          type: "message",
-          role: "user",
-          content: [{ type: "input_text", text: textToSend }],
-        },
-      },
-      "(user text message)"
-    );
-    setInputValue("");
-
-    // Trigger agent response
-    sendClientEvent({ type: "response.create" }, "(trigger response)");
-
-  }, [inputValue, sessionStatus, sendClientEvent, addTranscriptMessage]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") {
@@ -1340,39 +1434,49 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
 
           {/* --- Main Content Area --- */}
           <div className={`flex-1 overflow-y-auto p-4 scrollbar-thin scrollbar-thumb-blue-700 scrollbar-track-blue-800 ${!propertyListData && !selectedPropertyDetails && transcriptItems.length === 0 ? 'flex items-center justify-center' : 'space-y-4'}`}>
-            {/* Show Property List Cards (Priority) */} 
-            {propertyListData && !selectedPropertyDetails && (
-                <PropertyList 
-                    properties={propertyListData}
-                    onScheduleVisit={() => {}} // PropertyList expects this, PropertyDetails handles it now
-                    onPropertySelect={handlePropertySelect} // Pass the defined handler
+            {/* Show TimePick component when scheduling flow is active */}
+            {showTimeSlots && selectedProperty && (
+              <div className="relative w-full">
+                <TimePick
+                  schedule={availableSlots}
+                  property={selectedProperty}
                 />
+              </div>
             )}
             
-            {/* Show Agent's Text Message ONLY IF no property list is shown */}
-            {lastAgentTextMessage && !propertyListData && !selectedPropertyDetails && (
-                <div className="w-full mb-4">
-                    <p className="text-white text-xl font-medium italic">
-                       {lastAgentTextMessage}
-                    </p>
-                </div>
+            {/* Show Property List Cards (only if not in scheduling mode) */}
+            {propertyListData && !selectedPropertyDetails && !showTimeSlots && (
+              <PropertyList 
+                properties={propertyListData}
+                onScheduleVisit={handleScheduleVisit}
+                onPropertySelect={handlePropertySelect}
+              />
             )}
             
-            {/* Show only User Message if no agent text/cards */} 
-            {!lastAgentTextMessage && !propertyListData && !selectedPropertyDetails && transcriptItems.length > 0 && transcriptItems.filter(item => item.type === 'MESSAGE' && item.role === 'user').length > 0 && (
-                <>
-                {transcriptItems
-                    .filter(item => item.type === 'MESSAGE' && item.role === 'user')
-                    .slice(-1)
-                    .map(item => (
-                      <div key={item.itemId} className="absolute bottom-20 right-4 max-w-[80%] bg-blue-600 p-3 rounded-xl text-sm text-white rounded-br-none">
-                        {item.text || '[Transcribing...]'}
-                      </div>
-                    ))}
-                </>
+            {/* Show Agent's Text Message ONLY IF no property list or scheduling is shown */}
+            {lastAgentTextMessage && !propertyListData && !selectedPropertyDetails && !showTimeSlots && (
+              <div className="w-full mb-4">
+                <p className="text-white text-xl font-medium italic">
+                  {lastAgentTextMessage}
+                </p>
+              </div>
             )}
             
-            {/* Element to scroll to (only relevant if content might overflow) */} 
+            {/* Show only User Message if no agent text/cards/scheduling */}
+            {!lastAgentTextMessage && !propertyListData && !selectedPropertyDetails && !showTimeSlots && transcriptItems.length > 0 && transcriptItems.filter(item => item.type === 'MESSAGE' && item.role === 'user').length > 0 && (
+              <>
+              {transcriptItems
+                .filter(item => item.type === 'MESSAGE' && item.role === 'user')
+                .slice(-1)
+                .map(item => (
+                  <div key={item.itemId} className="absolute bottom-20 right-4 max-w-[80%] bg-blue-600 p-3 rounded-xl text-sm text-white rounded-br-none">
+                    {item.text || '[Transcribing...]'}
+                  </div>
+                ))}
+              </>
+            )}
+            
+            {/* Element to scroll to */}
             <div ref={transcriptEndRef} />
           </div>
 

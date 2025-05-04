@@ -14,26 +14,31 @@ interface Amenity {
 }
 
 interface PropertyLocation {
-  city: string
-  mapUrl: string
+  city?: string
+  mapUrl?: string
+  coords?: string
 }
 
 interface PropertyImage {
-  url: string
-  alt: string
+  url?: string
+  alt?: string
 }
 
 interface PropertyProps {
-  name: string
-  price: string
-  area :string
-  location: PropertyLocation
-  mainImage: string
-  galleryImages: PropertyImage[]
-  units: PropertyUnit[]
-  amenities: Amenity[]
+  id?: string
+  name?: string
+  price?: string
+  area?: string
+  location?: PropertyLocation
+  mainImage?: string
+  galleryImages?: PropertyImage[]
+  units?: PropertyUnit[]
+  amenities?: Amenity[]
+  description?: string
+  websiteUrl?: string
   onClose?: () => void
 }
+
 // Animation variants for the container
 const containerVariants: Variants = {
   hidden: { opacity: 0, y: 20 },

@@ -10,6 +10,16 @@ interface AgentMetadata extends BaseAgentMetadata {
   active_project_id?: string; // Current active project ID for direct reference
 }
 
+// Add interface for property detection response
+interface PropertyDetectionResult {
+  propertyDetected: boolean;
+  detectedProperty?: string;
+  shouldUpdateActiveProject?: boolean;
+  message?: string;
+  isScheduleRequest?: boolean;
+  schedulePropertyId?: string | null;
+}
+
 // Required Environment Variables: NEXT_PUBLIC_SUPABASE_ANON_KEY
 // Optional Environment Variables: NEXT_PUBLIC_TOOLS_EDGE_FUNCTION_URL (defaults provided)
 
@@ -62,7 +72,7 @@ Your responsibilities include:
 2. Providing directions to properties using 'calculateRoute'.
 3. Finding nearest places of interest using 'findNearestPlace'.
 4. Tracking user messages using 'trackUserMessage'. If the user is NOT verified, transfer to the 'authentication' agent after 7 questions.
-5. Asking the user if they'd like to schedule a visit after 12 questions (using the result from 'trackUserMessage'), but ONLY if they are verified AND haven't scheduled yet.
+5. If the user agrees to schedule a visit (after you ask or they request it), use the 'initiateScheduling' tool to start the process.
 6. Updating the internally focused property using 'updateActiveProject' whenever the user asks specifically about one property.
 7. Retrieving property images using 'getPropertyImages' when asked. The UI will display these.
 
@@ -87,6 +97,8 @@ TOOL USAGE:
 - Use 'calculateRoute' for directions.
 - Use 'findNearestPlace' for nearby amenities.
 - Use 'getPropertyImages' if the user asks to see images/pictures. The UI will display them.
+- Use 'initiateScheduling' ONLY when the user confirms they want to schedule a visit.
+  * CRITICAL: If the user message starts EXACTLY with "Yes, I'd like to schedule a visit for...", you MUST call 'initiateScheduling'. Extract the property name from the message to find the corresponding property ID from your metadata (project_id_map) and pass it to the tool if possible, otherwise, the tool will use the active project.
 `;
 };
 
@@ -274,6 +286,19 @@ const realEstateAgent: AgentConfig = {
         additionalProperties: false,
       },
     },
+    {
+      type: "function",
+      name: "initiateScheduling",
+      description: "Internal tool: Triggers the scheduling flow by transferring to the scheduleMeeting agent silently. Use when the user explicitly agrees to schedule a visit (e.g., says 'yes' after being asked) or requests it directly.",
+      parameters: {
+        type: "object",
+        properties: {
+          property_id: { type: "string", description: "Optional. The ID of the specific property to schedule for. If omitted, the agent will use the active project." },
+        },
+        required: [],
+        additionalProperties: false,
+      },
+    },
   ],
 
   // Tool Logic Implementation
@@ -283,6 +308,53 @@ const realEstateAgent: AgentConfig = {
         const metadata = realEstateAgent.metadata;
         const is_verified = metadata?.is_verified ?? false;
         const has_scheduled = metadata?.has_scheduled ?? false;
+
+        // Check if this is a scheduling message by running scheduling regex directly
+        const scheduleRegex = /^Yes, I'd like to schedule a visit for (.+?)[.!]?$/i;
+        if (scheduleRegex.test(message)) {
+            console.log("[trackUserMessage] Direct scheduling pattern match detected");
+            
+            // Extract property name
+            const propertyName = message.match(scheduleRegex)?.[1]?.trim();
+            console.log(`[trackUserMessage] Extracted property name: ${propertyName}`);
+            
+            // For debugging
+            const metadataAny = metadata as any;
+            console.log("[trackUserMessage] Available project_names:", metadata?.project_names);
+            console.log("[trackUserMessage] Current active_project:", metadata?.active_project);
+            console.log("[trackUserMessage] project_id_map:", metadataAny?.project_id_map);
+            
+            // Always use active project if available
+            if (metadataAny?.active_project_id) {
+                console.log(`[trackUserMessage] Using active_project_id: ${metadataAny.active_project_id}`);
+                return {
+                    destination_agent: "scheduleMeeting",
+                    property_id_to_schedule: metadataAny.active_project_id,
+                    silentTransfer: true,
+                    message: null
+                };
+            }
+            
+            // If no active project ID but we have project IDs, use the first one
+            if (metadata?.project_ids && metadata.project_ids.length > 0) {
+                console.log(`[trackUserMessage] No active project ID, using first project ID: ${metadata.project_ids[0]}`);
+                return {
+                    destination_agent: "scheduleMeeting",
+                    property_id_to_schedule: metadata.project_ids[0],
+                    silentTransfer: true,
+                    message: null
+                };
+            }
+            
+            // If all else fails, try a direct transfer without a specific property ID
+            // The scheduling agent will need to handle this case
+            console.log("[trackUserMessage] No property IDs found, transferring without specific property");
+            return {
+                destination_agent: "scheduleMeeting",
+                silentTransfer: true,
+                message: null
+            };
+        }
 
         questionCount++;
         console.log(`[trackUserMessage] Q#: ${questionCount}, Verified: ${is_verified}, Scheduled: ${has_scheduled}, Msg: "${message}"`);
@@ -299,10 +371,10 @@ const realEstateAgent: AgentConfig = {
         if (is_verified && !has_scheduled && questionCount >= 12) {
            console.log("[trackUserMessage] Asking user about scheduling visit.");
            // Reset count after asking
-           questionCount = 0; 
-           return { 
-             shouldAskScheduling: true, 
-             message: "Would you like to schedule a visit to see a property in person?" 
+           questionCount = 0;
+           return {
+             askToSchedule: true, // Flag for UI to potentially show buttons
+             message: "Would you like to schedule a visit to see a property in person?" // LLM will say this
            };
         }
 
@@ -314,6 +386,35 @@ const realEstateAgent: AgentConfig = {
         const metadata = realEstateAgent.metadata;
         const project_names = metadata?.project_names || [];
         console.log(`[detectPropertyInMessage] Available properties:`, project_names);
+
+        // ADDITION: Direct check for scheduling messages
+        const scheduleRegex = /^Yes, I'd like to schedule a visit for (.+?)[.!]?$/i;
+        const scheduleMatch = message.match(scheduleRegex);
+        
+        if (scheduleMatch) {
+            const propertyName = scheduleMatch[1].trim();
+            console.log(`[detectPropertyInMessage] Detected scheduling request for: "${propertyName}"`);
+            
+            // Find property ID if possible
+            let propertyId = null;
+            // Use type assertion to access these properties
+            const metadataAny = metadata as any;
+            if (metadataAny?.project_id_map && metadataAny.project_id_map[propertyName]) {
+                propertyId = metadataAny.project_id_map[propertyName];
+            } else if (metadataAny?.active_project_id && 
+                      (propertyName.toLowerCase() === metadata?.active_project?.toLowerCase())) {
+                propertyId = metadataAny.active_project_id;
+            }
+            
+            // Return special flag for scheduling
+            return {
+                propertyDetected: true,
+                detectedProperty: propertyName,
+                shouldUpdateActiveProject: true,
+                isScheduleRequest: true,
+                schedulePropertyId: propertyId
+            };
+        }
 
         if (!project_names.length) {
           return { propertyDetected: false, message: "No properties available" };
@@ -599,115 +700,16 @@ const realEstateAgent: AgentConfig = {
         }
     },
 
-    calculateRoute: async ({ origin, destination_property }: { origin: string; destination_property: string; }) => {
-        console.log(`[calculateRoute] Requesting route from "${origin}" to property "${destination_property}"`);
+    getPropertyImages: async ({ property_name, query }: { property_name?: string; query?: string }, transcript: TranscriptItem[] = []) => {
+        console.log(`[getPropertyImages] Fetching images for property: ${property_name || 'active project'}`);
         const metadata = realEstateAgent.metadata;
-        const destinationLatLng = metadata?.project_locations?.[destination_property];
+        const project_ids = metadata?.project_ids || [];
+        const active_project = metadata?.active_project || "N/A";
 
-        if (!destinationLatLng) {
-            console.error(`[calculateRoute] Location not found for destination property: "${destination_property}"`);
-            return { error: `Sorry, I don't have the location information for ${destination_property}.` };
-        }
-        if (!supabaseAnonKey) {
-             console.error("[calculateRoute] Missing NEXT_PUBLIC_SUPABASE_ANON_KEY.");
-             return { error: "Server configuration error." };
-        }
-
-        console.log(`[calculateRoute] Destination LatLng: ${destinationLatLng}`);
-
-        try {
-            const response = await fetch(
-                toolsEdgeFunctionUrl,
-                {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                        Authorization: `Bearer ${supabaseAnonKey}`,
-                    },
-                    body: JSON.stringify({
-                        action: "calculateRoute",
-                        origin,
-                        destination: destinationLatLng, // Send lat,lng
-                    }),
-                }
-            );
-            const data = await response.json();
-
-            if (response.ok && data.routeSummary) {
-                console.log(`[calculateRoute] Route summary: ${data.routeSummary}`);
-                return { routeSummary: data.routeSummary }; // Expects { routeSummary: "..." }
-            } else {
-                console.error("[calculateRoute] Edge function error:", data.error || response.statusText);
-                return { error: data.error || "Error calculating route." };
-            }
-        } catch (error: any) {
-            console.error("[calculateRoute] Exception calling edge function:", error);
-            return { error: `Exception calculating route: ${error.message}` };
-        }
-    },
-
-    findNearestPlace: async ({ query, reference_property }: { query: string; reference_property: string; }) => {
-        console.log(`[findNearestPlace] Finding "${query}" near property "${reference_property}"`);
-        const metadata = realEstateAgent.metadata;
-        const referenceLatLng = metadata?.project_locations?.[reference_property];
-
-        if (!referenceLatLng) {
-            console.error(`[findNearestPlace] Location not found for reference property: "${reference_property}"`);
-            return { error: `Sorry, I don't have the location information for ${reference_property}.` };
-        }
-         if (!supabaseAnonKey) {
-             console.error("[findNearestPlace] Missing NEXT_PUBLIC_SUPABASE_ANON_KEY.");
-             return { error: "Server configuration error." };
-         }
-
-        console.log(`[findNearestPlace] Reference LatLng: ${referenceLatLng}`);
-
-        try {
-            const response = await fetch(
-                 toolsEdgeFunctionUrl,
-                {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                        Authorization: `Bearer ${supabaseAnonKey}`,
-                    },
-                    body: JSON.stringify({
-                        action: "findNearestPlace",
-                        query,
-                        location: referenceLatLng, // Send lat,lng
-                    }),
-                }
-            );
-            const data = await response.json();
-
-            if (response.ok && data.nearestPlace) {
-                console.log(`[findNearestPlace] Result: ${data.nearestPlace}`);
-                return { nearestPlace: data.nearestPlace }; // Expects { nearestPlace: "..." }
-            } else {
-                console.error("[findNearestPlace] Edge function error:", data.error || response.statusText);
-                return { error: data.error || "Error finding nearest place." };
-            }
-        } catch (error: any) {
-            console.error("[findNearestPlace] Exception calling edge function:", error);
-            return { error: `Exception finding nearest place: ${error.message}` };
-        }
-    },
-
-    getPropertyImages: async ({ property_name, query }: { property_name?: string; query?: string }) => {
-        const metadata = realEstateAgent.metadata;
-        const targetProperty = property_name || metadata?.active_project;
-
-        if (!targetProperty || targetProperty === "N/A") {
-            console.error("[getPropertyImages] No property specified and no active project.");
-            return { error: "Please specify a property or select one first." };
-        }
         if (!supabaseAnonKey) {
             console.error("[getPropertyImages] Missing NEXT_PUBLIC_SUPABASE_ANON_KEY.");
             return { error: "Server configuration error." };
         }
-
-        const project_ids = metadata?.project_ids || [];
-        console.log(`[getPropertyImages] Searching images for "${targetProperty}", query: "${query || 'any'}", projects: ${project_ids.join(',')}`);
 
         try {
             const response = await fetch(
@@ -720,37 +722,68 @@ const realEstateAgent: AgentConfig = {
                     },
                     body: JSON.stringify({
                         action: "getPropertyImages",
-                        property_name: targetProperty,
-                        query: query || "",
+                        property_name: property_name || active_project,
+                        query,
                         project_ids,
                     }),
                 }
             );
-            const data = await response.json();
 
-            if (response.ok && data.images) {
-                console.log(`[getPropertyImages] Found ${data.images.length} images.`);
-                 // Expects { property_name: string, images: string[], message?: string }
-                return {
-                    property_name: data.property_name || targetProperty,
-                    images: data.images,
-                    message: data.message || (data.images.length ? `Here are some images for ${targetProperty}.` : `Sorry, I couldn't find images for ${targetProperty}.`)
-                };
-            } else {
-                console.error("[getPropertyImages] Edge function error:", data.error || response.statusText);
-                return { error: data.error || "Error retrieving property images." };
+            const result = await response.json();
+
+            if (!response.ok || result.error) {
+                console.error("[getPropertyImages] Edge function error:", result.error || response.statusText);
+                return { error: result.error || "Error fetching property images." };
             }
+
+            console.log("[getPropertyImages] Received property images:", result);
+            return result;
+
         } catch (error: any) {
             console.error("[getPropertyImages] Exception calling edge function:", error);
-            return { error: `Exception retrieving images: ${error.message}` };
+            return { error: `Exception fetching property images: ${error.message}` };
         }
+    },
+
+    initiateScheduling: async ({ property_id }: { property_id?: string }, transcript: TranscriptItem[] = []) => {
+        const metadata = realEstateAgent.metadata as AgentMetadata; // Added type assertion
+        const metadataAny = metadata as any;
+        
+        // Log available metadata for debugging
+        console.log("[initiateScheduling] DEBUG - Available metadata:");
+        console.log("  - property_id param:", property_id);
+        console.log("  - active_project_id:", metadataAny?.active_project_id);
+        console.log("  - active_project:", metadata?.active_project);
+        console.log("  - project_ids:", metadata?.project_ids);
+        
+        // Try multiple fallbacks for property ID
+        let targetPropertyId = property_id;
+        
+        if (!targetPropertyId && metadataAny?.active_project_id) {
+            console.log("[initiateScheduling] Using active_project_id:", metadataAny.active_project_id);
+            targetPropertyId = metadataAny.active_project_id;
+        }
+        
+        if (!targetPropertyId && metadata?.project_ids && metadata.project_ids.length > 0) {
+            console.log("[initiateScheduling] Falling back to first project_id:", metadata.project_ids[0]);
+            targetPropertyId = metadata.project_ids[0];
+        }
+        
+        // If we still don't have a property ID, proceed anyway and let the scheduling agent handle it
+        if (!targetPropertyId) {
+            console.log("[initiateScheduling] No property ID available, proceeding with transfer anyway");
+        } else {
+            console.log(`[initiateScheduling] Transferring to scheduleMeeting agent for property ID: ${targetPropertyId}`);
+        }
+        
+        return {
+            destination_agent: "scheduleMeeting",
+            property_id_to_schedule: targetPropertyId, // This might be undefined, but that's OK
+            silentTransfer: true,
+            message: null
+        };
     },
   },
 };
 
-// Make getInstructions available globally for potential use (though direct passing is preferred)
-if (typeof window !== 'undefined') {
-  (window as any).getInstructions = getInstructions;
-}
-
-export default realEstateAgent; 
+export default realEstateAgent;

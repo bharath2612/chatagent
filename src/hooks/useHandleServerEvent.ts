@@ -2,6 +2,7 @@
 
 import { ServerEvent, SessionStatus, AgentConfig, TranscriptItem } from "@/types/types"; // Adjusted import path, added TranscriptItem
 import { useRef, useEffect, useState } from "react";
+import { v4 as uuidv4 } from "uuid";
 
 // Helper function to create safe IDs (must be 32 chars or less)
 const generateSafeId = () => {
@@ -128,8 +129,10 @@ export function useHandleServerEvent({
 
         // Handle potential agent transfer signaled by tool logic
         if (fnResult && fnResult.destination_agent) {
+          const isSilent = fnResult.silentTransfer === true;
+
           console.log(
-            `[handleFunctionCall] Transferring to agent: ${fnResult.destination_agent}`
+            `[handleFunctionCall] ${isSilent ? 'Silently transferring' : 'Transferring'} to agent: ${fnResult.destination_agent}`
           );
           const newAgentConfig = selectedAgentConfigSet?.find(
             (a) => a.name === fnResult.destination_agent
@@ -138,42 +141,54 @@ export function useHandleServerEvent({
           if (newAgentConfig) {
             if (currentAgent.metadata) {
                // Create a clean copy for the new agent, merge specific fields passed back
-              newAgentConfig.metadata = { ...currentAgent.metadata };
+              newAgentConfig.metadata = { ...(currentAgent.metadata || {}) }; // Ensure metadata object exists
               if (fnResult.is_verified !== undefined) newAgentConfig.metadata.is_verified = fnResult.is_verified;
               if (fnResult.customer_name) newAgentConfig.metadata.customer_name = fnResult.customer_name;
               if (fnResult.phone_number) newAgentConfig.metadata.phone_number = fnResult.phone_number;
               if (fnResult.has_scheduled !== undefined) newAgentConfig.metadata.has_scheduled = fnResult.has_scheduled;
+              // Safely add property_to_schedule if metadata allows extra properties
+              if (fnResult.property_id_to_schedule && typeof newAgentConfig.metadata === 'object') {
+                 (newAgentConfig.metadata as any).property_id_to_schedule = fnResult.property_id_to_schedule;
+              }
 
               console.log(
                 `[handleFunctionCall] Copied/Updated metadata for new agent (${fnResult.destination_agent}):`,
-                newAgentConfig.metadata
               );
             }
             // Update the agent state in the parent component
             setSelectedAgentName(fnResult.destination_agent);
 
-            // // Optional: Trigger immediate response after transfer if needed
-            // if (fnResult.destination_agent === "authentication") {
-            //     setTimeout(() => sendClientEvent({ type: "response.create" }), 100);
-            // }
+            // Check if this is the scheduling agent (should be silent)
+            let silentTransfer = isSilent; // Start with the initial value
+            if (newAgentConfig && newAgentConfig.name === "scheduleMeeting") {
+              console.log("[handleFunctionCall] Always performing silent transfer to scheduling agent");
+              silentTransfer = true; // Always silent transfer for scheduleMeeting
+            }
+
+            // Use silentTransfer variable for the condition
+            if (silentTransfer) {
+              console.log("[handleFunctionCall] Silent transfer - skipping function_call_output event.");
+            } else {
+              // Only send non-silent transfers
+              sendClientEvent({
+                type: "conversation.item.create",
+                item: {
+                  id: generateSafeId(),
+                  type: "function_call_output",
+                  call_id: functionCallParams.call_id,
+                  output: JSON.stringify({
+                    status: newAgentConfig ? "Transfer successful" : "Transfer failed: Agent not found",
+                    transferred_to: fnResult.destination_agent,
+                    ...(newAgentConfig ? {} : {error: `Agent ${fnResult.destination_agent} not found`})
+                  }),
+                },
+              });
+            }
+
+            return; // Stop further processing in this handler
           } else {
               console.error(`[handleFunctionCall] Destination agent "${fnResult.destination_agent}" not found.`);
           }
-
-          // Send function output indicating transfer attempt (even if agent not found)
-           sendClientEvent({
-               type: "conversation.item.create",
-               item: {
-                 type: "function_call_output",
-                 call_id: functionCallParams.call_id,
-                 output: JSON.stringify({
-                      status: newAgentConfig ? "Transfer successful" : "Transfer failed: Agent not found",
-                      transferred_to: fnResult.destination_agent,
-                      ...(newAgentConfig ? {} : {error: `Agent ${fnResult.destination_agent} not found`})
-                 }),
-               },
-             });
-           // No automatic response.create needed here, let the useEffect trigger updateSession
 
           return; // Stop further processing in this handler
         }
@@ -187,6 +202,37 @@ export function useHandleServerEvent({
           // Optional: Decide if a response.create is still needed
            sendClientEvent({ type: "response.create" });
           return;
+        }
+
+        // Add this block inside the handleFunctionCall function, after parsing the response for getAvailableSlots
+        if (functionCallParams.name === "getAvailableSlots") {
+          try {
+            const result = JSON.parse(functionCallParams.arguments);
+            const fnResult = await fn(result, transcriptItems || []);
+            
+            console.log("[handleFunctionCall] getAvailableSlots result:", fnResult);
+            
+            // Store the property_id in the agent's metadata for later use
+            if (fnResult.property_id && currentAgent.metadata) {
+              console.log(`[handleFunctionCall] Storing property_id from getAvailableSlots: ${fnResult.property_id}`);
+              (currentAgent.metadata as any).lastReturnedPropertyId = fnResult.property_id;
+            }
+            
+            // Continue with normal function output
+            sendClientEvent({
+              type: "conversation.item.create",
+              item: {
+                type: "function_call_output",
+                call_id: functionCallParams.call_id,
+                output: JSON.stringify(fnResult),
+              },
+            });
+            sendClientEvent({ type: "response.create" });
+            return; // Skip the regular function handling
+          } catch (error) {
+            console.error("[handleFunctionCall] Error handling getAvailableSlots:", error);
+            // Continue with regular function handling
+          }
         }
 
         // Send regular function output

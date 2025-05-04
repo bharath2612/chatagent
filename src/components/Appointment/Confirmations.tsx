@@ -3,13 +3,6 @@
 
 import { motion, Variants } from "framer-motion"
 
-interface AppointmentConfirmedProps {
-  property: PropertyProps
-  onClose?: () => void
-  date: string
-  time: string
-}
-
 interface PropertyUnit {
   type: string
 }
@@ -19,25 +12,38 @@ interface Amenity {
 }
 
 interface PropertyLocation {
-  city: string
-  mapUrl: string
+  city?: string
+  mapUrl?: string
+  coords?: string
 }
 
 interface PropertyImage {
-  url: string
-  alt: string
+  url?: string
+  alt?: string
 }
-  
- interface PropertyProps {
-  name: string
-  price: string
-  area :string
-  location: PropertyLocation
-  mainImage: string
-  galleryImages: PropertyImage[]
-  units: PropertyUnit[]
-  amenities: Amenity[]
+
+interface PropertyProps {
+  id?: string
+  name?: string
+  price?: string
+  area?: string
+  location?: PropertyLocation
+  mainImage?: string
+  galleryImages?: PropertyImage[]
+  units?: PropertyUnit[]
+  amenities?: Amenity[]
+  description?: string
+  websiteUrl?: string
+  onClose?: () => void
 }
+
+interface AppointmentConfirmedProps {
+  property: PropertyProps
+  onClose?: () => void
+  date: string
+  time: string
+}
+
 // Animation variants for child elements
 const childVariants: Variants = {
   hidden: { opacity: 0, y: 10 },
