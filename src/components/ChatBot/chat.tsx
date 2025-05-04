@@ -1321,7 +1321,10 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
           {/* Voice Waveform (conditional?) */}
           {sessionStatus === 'CONNECTED' && !selectedPropertyDetails && (
              <div className="border-1 h-10 rounded-3xl w-72 p-4 justify-evenly ml-5 my-2 flex-shrink-0">
-               <VoiceWaveform/>
+               <VoiceWaveform
+                 mediaStream={audioElementRef.current?.srcObject as MediaStream}
+                 active={sessionStatus === 'CONNECTED' && !!audioElementRef.current?.srcObject}
+               />
              </div>
           )}
 
