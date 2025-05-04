@@ -300,7 +300,7 @@ export function useHandleServerEvent({
         }
 
         // Handle function_call_output specifically for getProjectDetails
-        if (serverEvent.item?.type === "function_call_output") {
+        if (serverEvent.item?.type === "function_call_output" && serverEvent.item?.name === "getProjectDetails") {
           // Type assertion to handle function_call_output which has 'output' property
           const outputString = (serverEvent.item as any).output;
           if (outputString) {

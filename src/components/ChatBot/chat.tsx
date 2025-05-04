@@ -76,7 +76,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
   const [isConfirmed, setIsConfirmed] = useState<boolean>(false)
   
   // --- New Intro Screen State ---
-  const [showIntro, setShowIntro] = useState(true) // Start with intro screen visible
+  const [showIntro, setShowIntro] = useState(true)
   const [selectedLanguage, setSelectedLanguage] = useState("English")
   const languageOptions = [
     "English", "Hindi", "Tamil", "Spanish", "French", 
@@ -123,14 +123,11 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       }
       
       if (role === 'assistant') {
-          setLastAgentTextMessage(text); 
+          setLastAgentTextMessage(text);
           if (properties && properties.length > 0) {
-              console.log('[addTranscriptMessage] Properties detected, calling setPropertyListData.', properties);
-              setPropertyListData(properties); 
-              setSelectedPropertyDetails(null); 
-          } 
+              console.log('[addTranscriptMessage] Properties detected, skipping setPropertyListData here (handled in handleServerEvent).', properties);
+          }
           // Never clear propertyListData for text messages, we want to keep them displayed
-          // if the user is already viewing the properties
       }
       
       setTranscriptItems((prev) => {
@@ -375,7 +372,12 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
     let propertiesHandledLocally = false;
 
     // --- Handle Function Call Output --- 
-    if (serverEvent.type === "conversation.item.created" && serverEvent.item?.type === "function_call_output") {
+    if (
+      serverEvent.type === "conversation.item.created" &&
+      serverEvent.item?.type === "function_call_output" &&
+      (serverEvent.item as any).name === "getProjectDetails" &&
+      !propertyListData
+    ) {
         const functionOutputItem = serverEvent.item as { id?: string; type: string; output?: string }; 
         console.log("[handleServerEvent] Detected function_call_output item.");
         const outputString = functionOutputItem?.output; 
@@ -497,14 +499,22 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
          }
      }
 
-     console.log(`[handleServerEvent] Passing event ${serverEvent.type} to original hook handler.`);
-     handleServerEventRefFromHook.current(serverEvent); 
+    // Forward other events, but skip getProjectDetails function_call_output to avoid overriding UI-loaded data
+    const isGetProjectDetailsOutput =
+      serverEvent.type === 'conversation.item.created' &&
+      serverEvent.item?.type === 'function_call_output' &&
+      (serverEvent.item as any).name === 'getProjectDetails';
+    if (!isGetProjectDetailsOutput && !propertiesHandledLocally) {
+      console.log(`[handleServerEvent] Passing event ${serverEvent.type} to original hook handler.`);
+      handleServerEventRefFromHook.current(serverEvent);
+    }
 
   }, [
       addTranscriptMessage, 
       updateTranscriptItemStatus, 
       handleServerEventRefFromHook,
-      generateSafeId // Add generateSafeId to dependencies
+      generateSafeId,
+      propertyListData
     ]);
 
   // Ref part remains the same
