@@ -591,40 +591,6 @@ const realEstateAgent: AgentConfig = {
 
             console.log("[getProjectDetails] Received project details:", result);
             
-            // Update UI state with property list data
-            if (result.properties && result.properties.length > 0) {
-                console.log(`[getProjectDetails] Setting propertyListData with ${result.properties.length} properties`);
-                
-                // Transform property data to match frontend expected format
-                const formattedProperties = result.properties.map((property: any) => ({
-                    id: property.id,
-                    name: property.name || "Property",
-                    price: property.price || "Price on request",
-                    area: property.area || "Area unavailable",
-                    location: {
-                        city: property.location?.city || "Location unavailable",
-                        mapUrl: property.location?.coords ? 
-                            `https://www.google.com/maps/embed?pb=!1m18!1m12!1m3!1d500!2d${property.location.coords.split(',')[1]}!3d${property.location.coords.split(',')[0]}!2m3!1f0!2f0!3f0!3m2!1i1024!2i768!4f13.1!3m3!1m2!1s0x0%3A0x0!2z!5e0!3m2!1sen!2sin!4v1599999999999!5m2!1sen!2sin` : 
-                            ""
-                    },
-                    mainImage: property.images?.length > 0 ? property.images[0].url : "/placeholder.svg",
-                    galleryImages: (property.images || []).map((img: any) => ({
-                        url: img.url || "/placeholder.svg",
-                        alt: img.alt || property.name || "Property image"
-                    })),
-                    units: (property.units || []).map((unit: any) => ({
-                        type: typeof unit === 'string' ? unit : (unit.type || "Unit")
-                    })),
-                    amenities: (property.amenities || []).map((amenity: any) => ({
-                        name: typeof amenity === 'string' ? amenity : (amenity.name || "Amenity")
-                    })),
-                    description: property.description || "No description available",
-                    websiteUrl: property.websiteUrl || ""
-                }));
-                
-                result.properties = formattedProperties;
-            }
-            
             return result;
 
         } catch (error: any) {
