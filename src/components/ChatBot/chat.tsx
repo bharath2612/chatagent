@@ -627,7 +627,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
        // This is what enables the microphone to automatically detect when user starts/stops speaking
        const turnDetection = !micMuted ? {
            type: "server_vad",
-           threshold: 0.5,
+           threshold: 0.8,
            prefix_padding_ms: 250,
            silence_duration_ms: 400,
            create_response: true,
