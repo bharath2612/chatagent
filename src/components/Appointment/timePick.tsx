@@ -6,6 +6,7 @@ import AppointmentConfirmed from "./Confirmations"
 import { motion, AnimatePresence, Variants } from "framer-motion"
 import Calendar from 'react-calendar';
 import 'react-calendar/dist/Calendar.css'; // Import calendar CSS
+import { X, ChevronLeft, ChevronRight } from "lucide-react"
 
 interface PropertyUnit {
   type: string
@@ -67,205 +68,208 @@ type Schedule = {
 }
 
 interface TimePickProps {
-  schedule: Schedule
-  property: PropertyProps
-  onTimeSelect?: (date: string, time: string) => void
-  showVerification?: boolean
-  onVerificationSubmit?: (name: string, phone: string) => void
+  property: PropertyProps;
+  schedule: Record<string, string[]>;
+  onTimeSelect: (date: string, time: string) => void;
+  timeSlots?: string[];
 }
 
-export default function TimePick({ 
-  schedule, 
-  property,
-  onTimeSelect,
-  showVerification = false,
-  onVerificationSubmit
-}: TimePickProps) {
-
-  // --- Helper Functions Inside Component ---
-  const getAvailableDates = useCallback((currentSchedule: Schedule): Date[] => {
-    return Object.keys(currentSchedule).map(dateStr => new Date(dateStr.split(', ')[1] + ", " + new Date().getFullYear()));
-  }, []);
-
-  const tileDisabled = useCallback(({ date, view }: { date: Date, view: string }): boolean => {
-    if (view === 'month') {
-      const availableDates = getAvailableDates(schedule); 
-      const dayOfWeek = date.getDay();
-      if (dayOfWeek === 0 || dayOfWeek === 6) return true;
-      return !availableDates.some(availableDate => 
-        availableDate.getFullYear() === date.getFullYear() &&
-        availableDate.getMonth() === date.getMonth() &&
-        availableDate.getDate() === date.getDate()
-      );
-    }
-    return false;
-  }, [schedule, getAvailableDates]);
-
-  const formatDateForSchedule = useCallback((date: Date): string => {
-    const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-    const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-    return `${days[date.getDay()]}, ${monthNames[date.getMonth()]} ${date.getDate()}`;
-  }, []);
-  
-  // --- Component State ---
+export default function TimePick({ schedule, property, onTimeSelect, timeSlots }: TimePickProps) {
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [selectedTime, setSelectedTime] = useState<string | null>(null);
-  const [showVerificationForm, setShowVerificationForm] = useState<boolean>(false);
-  const [isConfirmed, setIsConfirmed] = useState<boolean>(false);
-  const [isLoading, setIsLoading] = useState(true);
-
-  // Update loading state and find first available date when schedule arrives
-  useEffect(() => {
-    if (Object.keys(schedule).length > 0) {
-      setIsLoading(false);
-      // Find the first available date in the schedule to pre-select
-      const firstAvailableDateStr = Object.keys(schedule)[0];
-      if (firstAvailableDateStr && !selectedDate) { // Only set if not already selected
-        const initialDate = new Date(firstAvailableDateStr.split(', ')[1] + ", " + new Date().getFullYear());
-        // Check if this initial date is valid before setting
-        if (!tileDisabled({ date: initialDate, view: 'month' })) {
-          setSelectedDate(initialDate);
-        }
-      }
-    } else {
-      setIsLoading(true);
-      setSelectedDate(null); // Clear date if schedule becomes empty
-    }
-  }, [schedule, selectedDate, tileDisabled]); // Added tileDisabled as dependency
-
-  // Handle date selection from calendar
-  const handleDateChange = (value: any) => {
-    if (value instanceof Date) {
-      setSelectedDate(value);
-      setSelectedTime(null); // Reset time when date changes
-    }
+  const [availableTimes, setAvailableTimes] = useState<string[]>([]);
+  const [currentMonth, setCurrentMonth] = useState(new Date());
+  
+  const defaultTimeSlots = ["11:00 AM", "4:00 PM"];
+  const actualTimeSlots = timeSlots || defaultTimeSlots;
+  
+  // Format the date for display and storage
+  const formatDate = (date: Date): string => {
+    const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    const months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+    
+    return `${days[date.getDay()]}, ${months[date.getMonth()]} ${date.getDate()}`;
   };
-
-  // Handle time button click
+  
+  // When a date is selected, update the selectedDate state and set available times
+  const handleDateClick = (date: Date) => {
+    const formattedDate = formatDate(date);
+    console.log(`[TimePick] Selected date: ${formattedDate}`);
+    
+    setSelectedDate(date);
+    
+    // Always use the standardized time slots for any date
+    setAvailableTimes(actualTimeSlots);
+    
+    // Clear any previously selected time
+    setSelectedTime(null);
+  };
+  
+  // When a time is selected, update the selectedTime state and call the onTimeSelect callback
   const handleTimeClick = (time: string) => {
+    console.log(`[TimePick] Selected time: ${time}`);
     setSelectedTime(time);
-    if (onTimeSelect && selectedDate) {
-      const formattedDate = formatDateForSchedule(selectedDate);
+    
+    // Call the parent component's onTimeSelect callback with the selected date and time
+    if (selectedDate) {
+      const formattedDate = formatDate(selectedDate);
       onTimeSelect(formattedDate, time);
-    }
-    if (showVerification) {
-      setShowVerificationForm(true);
-    }
-  };
-
-  // Handle verification form submit
-  const handleVerificationSubmit = (name: string, phone: string) => {
-    if (onVerificationSubmit) {
-      onVerificationSubmit(name, phone);
-      setIsConfirmed(true); // Move to confirmation screen after submit
     }
   };
   
-  // Get available times for the selected date
-  const availableTimes = selectedDate ? schedule[formatDateForSchedule(selectedDate)] || [] : [];
+  // Helper to determine if a date is selectable (for the calendar)
+  // Now we'll allow all dates except past dates
+  const isDateAvailable = (date: Date): boolean => {
+    // Don't allow past dates
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    if (date < today) return false;
+    
+    // Don't allow weekends
+    const dayOfWeek = date.getDay();
+    if (dayOfWeek === 0 || dayOfWeek === 6) return false;
+    
+    // All other dates are available
+    return true;
+  };
+  
+  // Generate calendar days for the current month
+  const generateCalendarDays = () => {
+    const daysInMonth = new Date(
+      currentMonth.getFullYear(),
+      currentMonth.getMonth() + 1,
+      0
+    ).getDate();
+    
+    const firstDayOfMonth = new Date(
+      currentMonth.getFullYear(),
+      currentMonth.getMonth(),
+      1
+    ).getDay();
+    
+    let days = [];
+    
+    // Add empty cells for days before the 1st of the month
+    for (let i = 0; i < firstDayOfMonth; i++) {
+      days.push(<div key={`empty-${i}`} className="h-10 w-10"></div>);
+    }
+    
+    // Add days of the month
+    for (let i = 1; i <= daysInMonth; i++) {
+      const date = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), i);
+      const isAvailable = isDateAvailable(date);
+      const isSelected = selectedDate?.getDate() === i && 
+                        selectedDate?.getMonth() === currentMonth.getMonth() &&
+                        selectedDate?.getFullYear() === currentMonth.getFullYear();
+      
+      days.push(
+        <button
+          key={`day-${i}`}
+          className={`h-10 w-10 rounded-full flex items-center justify-center text-lg font-medium
+                     ${isAvailable ? 'cursor-pointer hover:bg-blue-500 hover:text-white hover:shadow-md active:bg-blue-600' : 'opacity-30 cursor-not-allowed'}
+                     ${isSelected ? 'bg-blue-600 text-white shadow-md' : isAvailable ? 'text-white' : 'text-gray-400'}`}
+          onClick={() => isAvailable && handleDateClick(date)}
+          disabled={!isAvailable}
+          type="button"
+          aria-label={`Select ${i}`}
+        >
+          {i}
+        </button>
+      );
+    }
+    
+    return days;
+  };
+  
+  // Navigation for the calendar
+  const goToPreviousMonth = () => {
+    setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() - 1));
+  };
+  
+  const goToNextMonth = () => {
+    setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1));
+  };
+  
+  // Get month and year for display
+  const monthYearDisplay = () => {
+    const months = ['January', 'February', 'March', 'April', 'May', 'June', 
+                   'July', 'August', 'September', 'October', 'November', 'December'];
+    return `${months[currentMonth.getMonth()]} ${currentMonth.getFullYear()}`;
+  };
 
   return (
-    <div className="p-4 absolute top-36 bg-[#0b3d91] text-white rounded-xl space-y-4 w-[calc(100%-2rem)] mx-auto">
-      <AnimatePresence mode="wait">
-        {isConfirmed ? (
-          <motion.div key="appointment-confirmed" variants={containerVariants} initial="hidden" animate="visible" exit="exit">
-            <AppointmentConfirmed 
-              property={property} 
-              date={selectedDate ? formatDateForSchedule(selectedDate) : ""}
-              time={selectedTime || ""}
-            />
-          </motion.div>
-        ) : (
-          <motion.div key="time-pick-calendar" variants={containerVariants} initial="hidden" animate="visible" exit="exit" className="flex flex-col items-center">
-            <motion.h3 variants={childVariants} className="text-lg font-semibold mb-2 text-center">
-              Select a Date & Time for {property.name}
-            </motion.h3>
-            
-            <motion.div variants={childVariants} className="mb-4 w-full calendar-container">
-              <Calendar
-                onChange={handleDateChange}
-                value={selectedDate}
-                minDate={new Date()}
-                tileDisabled={tileDisabled}
-                className="bg-blue-800 border-none rounded-lg text-white"
-              />
-            </motion.div>
-
-            {selectedDate && !isLoading && (
-              <motion.div variants={childVariants} className="w-full flex justify-center space-x-4">
-                {availableTimes.length > 0 ? (
-                  availableTimes.map((time) => (
-                    <button
-                      key={time}
-                      onClick={() => handleTimeClick(time)}
-                      className={`px-4 py-2 rounded-lg font-medium transition-colors 
-                        ${selectedTime === time ? 'bg-white text-blue-900' : 'bg-blue-600 hover:bg-blue-700'}`}
-                    >
-                      {time}
-                    </button>
-                  ))
-                ) : (
-                  <p className="text-sm italic opacity-75">No slots available for this date.</p>
-                )}
-              </motion.div>
+    <div className="bg-blue-800 rounded-xl p-6 w-full max-w-md mx-auto text-white shadow-lg">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-xl font-semibold">{property.name}</h2>
+        <button className="text-white opacity-70 hover:opacity-100 p-2 hover:bg-blue-700 rounded-full">
+          <X size={20} />
+        </button>
+      </div>
+      
+      <p className="mb-6 text-sm opacity-80">{property.description || 'Schedule a visit to view this property.'}</p>
+      
+      {/* Calendar Section */}
+      <div className="mb-6 p-4 bg-blue-900 rounded-lg shadow-inner">
+        <div className="flex justify-between items-center mb-4">
+          <button 
+            onClick={goToPreviousMonth} 
+            className="text-white p-2 hover:bg-blue-800 rounded-full transition-colors"
+            aria-label="Previous month"
+          >
+            <ChevronLeft size={24} />
+          </button>
+          <h3 className="text-white font-medium text-lg">{monthYearDisplay()}</h3>
+          <button 
+            onClick={goToNextMonth} 
+            className="text-white p-2 hover:bg-blue-800 rounded-full transition-colors"
+            aria-label="Next month"
+          >
+            <ChevronRight size={24} />
+          </button>
+        </div>
+        
+        {/* Day labels */}
+        <div className="grid grid-cols-7 gap-2 mb-2">
+          {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((day, index) => (
+            <div key={index} className="h-10 w-10 flex items-center justify-center text-sm font-bold text-blue-300">
+              {day}
+            </div>
+          ))}
+        </div>
+        
+        {/* Calendar days */}
+        <div className="grid grid-cols-7 gap-2">
+          {generateCalendarDays()}
+        </div>
+      </div>
+      
+      {/* Time Selection Section */}
+      {selectedDate && (
+        <div className="mb-4">
+          <h3 className="font-medium mb-4 text-lg">Available Times for {formatDate(selectedDate)}</h3>
+          <div className="grid grid-cols-2 gap-4">
+            {availableTimes.length > 0 ? (
+              availableTimes.map((time, index) => (
+                <button
+                  key={index}
+                  className={`py-4 px-6 rounded-lg border text-lg font-medium transition-all
+                    ${selectedTime === time
+                      ? 'bg-blue-600 border-blue-500 font-bold shadow-md scale-105'
+                      : 'border-blue-700 hover:bg-blue-700 hover:shadow-md active:scale-95'
+                    }`}
+                  onClick={() => handleTimeClick(time)}
+                  type="button"
+                  aria-label={`Select time ${time}`}
+                >
+                  {time}
+                </button>
+              ))
+            ) : (
+              <p className="col-span-2 text-center text-sm">No available times for this date.</p>
             )}
-            
-            {isLoading && (
-               <p className="text-sm italic opacity-75 mt-4">Loading available dates...</p>
-            )}
-
-          </motion.div>
-        )}
-      </AnimatePresence>
-      {/* Add some basic styling for the calendar */}
-      <style jsx global>{`
-        .calendar-container .react-calendar {
-          border: none;
-          background-color: transparent;
-          font-family: inherit;
-          width: 100%;
-        }
-        .calendar-container .react-calendar__navigation button {
-          color: white;
-          min-width: 34px;
-          background: none;
-          font-size: 1rem;
-        }
-        .calendar-container .react-calendar__navigation button:enabled:hover,
-        .calendar-container .react-calendar__navigation button:enabled:focus {
-          background-color: #1e4db7; /* Slightly lighter blue */
-        }
-        .calendar-container .react-calendar__month-view__weekdays__weekday abbr {
-          text-decoration: none;
-          font-weight: normal;
-          color: #a0aec0; /* Lighter gray */
-        }
-        .calendar-container .react-calendar__tile {
-          color: white;
-          background: none;
-          border-radius: 4px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          height: 36px; 
-        }
-        .calendar-container .react-calendar__tile:enabled:hover,
-        .calendar-container .react-calendar__tile:enabled:focus {
-          background-color: #1e4db7;
-        }
-        .calendar-container .react-calendar__tile--now {
-          background: #2a5dd8; /* Highlight current day */
-        }
-        .calendar-container .react-calendar__tile--active {
-          background: #4a90e2; /* Highlight selected day */
-          color: white;
-        }
-         .calendar-container .react-calendar__tile--disabled {
-          background-color: transparent;
-          color: #4a5568; /* Darker gray for disabled */
-          cursor: not-allowed;
-        }
-      `}</style>
+          </div>
+        </div>
+      )}
     </div>
-  )
+  );
 }

@@ -800,7 +800,7 @@ const realEstateAgent: AgentConfig = {
             destination_agent: "scheduleMeeting",
             property_id_to_schedule: targetPropertyId, // This might be undefined, but that's OK
             silentTransfer: true,
-            message: null
+            message: null // Setting this to null ensures the agent doesn't say anything
         };
     },
   },

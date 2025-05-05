@@ -21,9 +21,9 @@ const getScheduleMeetingInstructions = (metadata: AgentMetadata | undefined | nu
 
 STRICTLY FOLLOW THIS EXACT FLOW:
 1. CALL TOOL: Immediately call getAvailableSlots. Output ONLY the tool call.
-2. GREET & ASK DATE: After getAvailableSlots returns, THEN greet the user ("Hello! I'm the scheduling assistant for ${propertyName}.") and ask them to select a date: "Please select a date for your visit from the calendar below." The UI will display the calendar.
+2. GREET & ASK DATE: After getAvailableSlots returns, THEN greet the user ("Hello! I'm here to help you schedule a visit to ${propertyName}.") and ask them to select a date: "Please select a date for your visit from the calendar below." The UI will display the calendar.
 3. WAIT FOR DATE: User selects a date from the UI.
-4. ASK TIME: Once date is selected (user will message like "Selected Tuesday, May 21"), ask for time: "Great. Please select a time: 11:00 AM or 4:00 PM." The UI will show time buttons.
+4. ASK TIME: Once date is selected (user will message like "Selected Tuesday, May 21"), ask for time: "Great. Please select a time from the available options." The UI will show time buttons.
 5. WAIT FOR TIME: User selects a time (user will message like "Selected 4:00 PM").
 6. CHECK VERIFICATION (using status from getAvailableSlots result):
    - If user_verification_status was "verified":
@@ -31,20 +31,22 @@ STRICTLY FOLLOW THIS EXACT FLOW:
      * Wait for user confirmation (e.g., "Confirm", "Yes").
      * On confirmation, CALL TOOL: scheduleVisit.
    - If user_verification_status was "unverified":
-     * CALL TOOL: requestAuthentication. DO NOT ask for name/phone yourself. Your turn ends.
+     * CALL TOOL: requestAuthentication. DO NOT add any explanation about authentication.
+     * Your turn ends immediately.
 7. HANDLE scheduleVisit RESULT:
    * If scheduleVisit tool succeeds (returns booking_confirmed: true):
-     * Confirm to user: "Great news, ${customerName || 'your visit'} for ${propertyName} on [Selected Date] at [Selected Time] is confirmed! You'll receive details shortly."
+     * Confirm to user: "Great news! Your visit to ${propertyName} on [Selected Date] at [Selected Time] is confirmed! You'll receive details shortly."
      * CALL TOOL: completeScheduling. Your turn ends.
    * If scheduleVisit tool fails:
      * Inform user: "I encountered an issue scheduling your visit. Please try again later or contact support."
-     * CALL TOOL: completeScheduling (to return user to main agent). Your turn ends.
+     * CALL TOOL: completeScheduling. Your turn ends.
 
 CRITICAL RULES:
 - Step 1 (getAvailableSlots) MUST be your first output.
 - Follow the flow exactly.
 - Let the authentication agent handle name/phone collection if needed.
 - End your turn immediately after calling requestAuthentication or completeScheduling.
+- NEVER mention "transferring" to another agent or that another agent will handle verification.
 
 LANGUAGE: Respond ONLY in ${language}.
 `;
@@ -133,32 +135,20 @@ const scheduleMeetingAgent: AgentConfig = {
         propertyName = metadata.active_project;
       }
       
-      // --- Simplified calendar data with exactly two time slots per day ---
-      const today = new Date();
-      // Get the current month
-      const currentMonth = today.getMonth();
-      const currentYear = today.getFullYear();
-      const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
+      // Instead of generating dummy dates, return an empty object 
+      // This will allow the UI to show the full calendar for user selection
+      // We'll just specify the time slots to show after date selection
+      const slots: Record<string, string[]> = {};
       
-      // Create calendar for current month
-      const dummySlots: Record<string, string[]> = {};
-      const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-      const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+      // We only need to specify the available time slots
+      // These will be shown after the user selects any date
+      // Fixed standard time slots for all dates
+      const standardTimeSlots = ["11:00 AM", "4:00 PM"];
       
-      // Start from tomorrow
-      const startDay = today.getDate() + 1;
-      
-      // Create slots for the next 14 days (or until end of month)
-      for (let i = startDay; i <= Math.min(startDay + 14, daysInMonth); i++) {
-        const date = new Date(currentYear, currentMonth, i);
-        // Skip weekends
-        if (date.getDay() === 0 || date.getDay() === 6) continue;
-        
-        const dayName = days[date.getDay()];
-        const dateStr = `${dayName}, ${monthNames[currentMonth]} ${i}`;
-        
-        // ALWAYS use exactly these two time slots
-        dummySlots[dateStr] = ["11:00 AM", "4:00 PM"];
+      // If the UI has previously stored a selected date, add it to the slots
+      // This makes it compatible with the existing UI code
+      if ((metadata as any)?.selectedDate) {
+        slots[(metadata as any).selectedDate] = standardTimeSlots;
       }
       
       // Check if user is verified
@@ -166,7 +156,8 @@ const scheduleMeetingAgent: AgentConfig = {
       const userVerificationStatus = isVerified ? "verified" : "unverified";
 
       return { 
-        slots: dummySlots, 
+        slots: slots,  // Empty object - will let UI show full calendar
+        timeSlots: standardTimeSlots, // Provide standard time slots for ALL dates
         property_id: effectivePropertyId,
         property_name: propertyName,
         user_verification_status: userVerificationStatus
@@ -187,6 +178,21 @@ const scheduleMeetingAgent: AgentConfig = {
       console.log("  - property_id from args:", propertyIdFromArgs);
       console.log("  - property_id_to_schedule from metadata:", (metadata as any)?.property_id_to_schedule);
       console.log("  - project_ids from metadata:", metadata?.project_ids);
+      console.log("  - selectedDate from metadata:", (metadata as any)?.selectedDate);
+      console.log("  - selectedTime from metadata:", (metadata as any)?.selectedTime);
+
+      // Check if we have stored date and time in metadata
+      let actualVisitDateTime = visitDateTime;
+      if (!actualVisitDateTime && (metadata as any)?.selectedDate && (metadata as any)?.selectedTime) {
+        actualVisitDateTime = `${(metadata as any).selectedDate} at ${(metadata as any).selectedTime}`;
+        console.log(`[scheduleVisit] Using date/time from metadata: ${actualVisitDateTime}`);
+      }
+
+      // If we still don't have a date/time, report an error
+      if (!actualVisitDateTime) {
+        console.error("[scheduleVisit] No visit date/time provided.");
+        return { error: "No date and time selected for the visit." };
+      }
 
       // Determine property ID: prioritize args, fallback to metadata passed during transfer
       let property_id = propertyIdFromArgs || (metadata as any)?.property_id_to_schedule;
@@ -255,7 +261,7 @@ const scheduleMeetingAgent: AgentConfig = {
                   customerName: customer_name, // Use determined name
                   phoneNumber: phone_number, // Use determined phone
                   propertyId: property_id,
-                  visitDateTime: visitDateTime,
+                  visitDateTime: actualVisitDateTime,
                   chatbotId: chatbot_id,
                   sessionId: session_id
                 })
@@ -274,7 +280,7 @@ const scheduleMeetingAgent: AgentConfig = {
             // Return structure indicating completion and transfer is needed
             return {
               booking_confirmed: true, // Signal confirmation
-              confirmed_date: visitDateTime, // Pass back details for confirmation message
+              confirmed_date: actualVisitDateTime, // Pass back details for confirmation message
               // Let the agent decide to call completeScheduling based on this tool's success
               message: "Booking successful via API." // Internal message, agent will generate final confirmation
             };
@@ -301,6 +307,20 @@ const scheduleMeetingAgent: AgentConfig = {
         // Pass updated has_scheduled flag implicitly via metadata copy
         has_scheduled: true 
       };
+    },
+    // Add mock implementation for trackUserMessage (used by realEstate agent)
+    // This prevents the "Tool logic not found" error if LLM tries to call it
+    trackUserMessage: async ({ message }: { message: string }) => {
+      console.log("[ScheduleMeeting] Received trackUserMessage call (ignoring):", message);
+      // Return success without side effects - this is a no-op in scheduling agent
+      return { success: true, message: "Scheduling agent acknowledges message" };
+    },
+    
+    // Add mock implementation for detectPropertyInMessage (used by realEstate agent)
+    detectPropertyInMessage: async ({ message }: { message: string }) => {
+      console.log("[ScheduleMeeting] Received detectPropertyInMessage call (ignoring):", message);
+      // Return "no property detected" to avoid confusing the LLM
+      return { propertyDetected: false, message: "Scheduling agent does not detect properties" };
     }
   }
 };
@@ -320,9 +340,9 @@ const updatedInstructions = (metadata: AgentMetadata | undefined | null): string
  
  STRICTLY FOLLOW THIS EXACT FLOW:
  1. CALL TOOL: Immediately call getAvailableSlots. Output ONLY the tool call.
- 2. GREET & ASK DATE: After getAvailableSlots returns, THEN greet the user ("Hello! I'm the scheduling assistant for ${propertyName}.") and ask them to select a date: "Please select a date for your visit from the calendar below." The UI will display the calendar.
+ 2. GREET & ASK DATE: After getAvailableSlots returns, THEN greet the user ("Hello! I'm here to help you schedule a visit to ${propertyName}.") and ask them to select a date: "Please select a date for your visit from the calendar below." The UI will display the calendar.
  3. WAIT FOR DATE: User selects a date from the UI.
- 4. ASK TIME: Once date is selected (user will message like "Selected Tuesday, May 21"), ask for time: "Great. Please select a time: 11:00 AM or 4:00 PM." The UI will show time buttons.
+ 4. ASK TIME: Once date is selected (user will message like "Selected Tuesday, May 21"), ask for time: "Great. Please select a time from the available options." The UI will show time buttons.
  5. WAIT FOR TIME: User selects a time (user will message like "Selected 4:00 PM").
  6. CHECK VERIFICATION (using status from getAvailableSlots result):
     - If user_verification_status was "verified":
@@ -330,20 +350,22 @@ const updatedInstructions = (metadata: AgentMetadata | undefined | null): string
       * Wait for user confirmation (e.g., "Confirm", "Yes").
       * On confirmation, CALL TOOL: scheduleVisit.
     - If user_verification_status was "unverified":
-      * CALL TOOL: requestAuthentication. DO NOT ask for name/phone yourself. Your turn ends.
+      * CALL TOOL: requestAuthentication. DO NOT add any explanation about authentication.
+      * Your turn ends immediately.
  7. HANDLE scheduleVisit RESULT:
     * If scheduleVisit tool succeeds (returns booking_confirmed: true):
-      * Confirm to user: "Great news, ${customerName || 'your visit'} for ${propertyName} on [Selected Date] at [Selected Time] is confirmed! You'll receive details shortly."
+      * Confirm to user: "Great news! Your visit to ${propertyName} on [Selected Date] at [Selected Time] is confirmed! You'll receive details shortly."
       * CALL TOOL: completeScheduling. Your turn ends.
     * If scheduleVisit tool fails:
       * Inform user: "I encountered an issue scheduling your visit. Please try again later or contact support."
-      * CALL TOOL: completeScheduling (to return user to main agent). Your turn ends.
+      * CALL TOOL: completeScheduling. Your turn ends.
  
  CRITICAL RULES:
  - Step 1 (getAvailableSlots) MUST be your first output.
  - Follow the flow exactly.
  - Let the authentication agent handle name/phone collection if needed.
  - End your turn immediately after calling requestAuthentication or completeScheduling.
+ - NEVER mention "transferring" to another agent or that another agent will handle verification.
  
  LANGUAGE: Respond ONLY in ${language}.
  `;

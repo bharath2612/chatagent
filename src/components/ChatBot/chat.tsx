@@ -1307,29 +1307,58 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
   const handleTimeSlotSelection = useCallback((date: string, time: string) => {
     console.log(`[UI] User selected time slot: ${date} at ${time}`);
     
-    // Store the selected date and time
+    // Stop any current response/audio first to avoid errors
+    stopCurrentResponse(sendClientEvent);
+    
+    // Store the selected date and time in local state
     setSelectedDay(date);
     setSelectedTime(time);
     
-    // Send the selection message to the agent. The agent will decide if verification is needed.
-    const userMessageId = generateSafeId();
-    const selectionMessage = `Selected ${date} at ${time}.`; // Simpler message
+    // First, find the current agent (should be scheduleMeeting)
+    const schedulingAgent = selectedAgentConfigSet?.find(a => a.name === "scheduleMeeting");
+    if (schedulingAgent && schedulingAgent.metadata) {
+      // Save the selected date and time in agent metadata
+      (schedulingAgent.metadata as any).selectedDate = date;
+      (schedulingAgent.metadata as any).selectedTime = time;
+      console.log(`[UI] Saved date ${date} and time ${time} to agent metadata`);
+    }
     
-    addTranscriptMessage(userMessageId, 'user', selectionMessage);
-    
-    sendClientEvent(
-      {
-        type: "conversation.item.create",
-        item: {
-          id: userMessageId, type: "message", role: "user", 
-          content: [{ type: "input_text", text: selectionMessage }]
+    // Add a small delay before sending the selection message to avoid race conditions
+    setTimeout(() => {
+      // Send the selection message to the agent. The agent will decide if verification is needed.
+      const userMessageId = generateSafeId();
+      const selectionMessage = `Selected ${date} at ${time}.`; // Simpler message
+      
+      addTranscriptMessage(userMessageId, 'user', selectionMessage);
+      
+      sendClientEvent(
+        {
+          type: "conversation.item.create",
+          item: {
+            id: userMessageId, type: "message", role: "user", 
+            content: [{ type: "input_text", text: selectionMessage }]
+          }
+        },
+        "(time slot selection)"
+      );
+      
+      // Small delay before creating a response
+      setTimeout(() => {
+        if (canCreateResponse()) {
+          sendClientEvent({ type: "response.create" }, "(trigger response after slot selection)");
+        } else {
+          console.log("[UI] Cannot create response - active response or agent transfer in progress");
+          sendClientEvent({ type: "response.cancel" });
+          
+          // Try again after cancellation
+          setTimeout(() => {
+            sendClientEvent({ type: "response.create" }, "(retry after cancellation)");
+          }, 200);
         }
-      },
-      "(time slot selection)"
-    );
-    sendClientEvent({ type: "response.create" }, "(trigger response after slot selection)");
+      }, 100);
+    }, 100);
 
-  }, [sendClientEvent, addTranscriptMessage, generateSafeId]);
+  }, [sendClientEvent, addTranscriptMessage, generateSafeId, selectedAgentConfigSet, stopCurrentResponse, canCreateResponse]);
 
   // Add verification submission handler
   const handleVerificationSubmit = useCallback((name: string, phone: string) => {

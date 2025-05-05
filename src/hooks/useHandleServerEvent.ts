@@ -10,6 +10,9 @@ const generateSafeId = () => {
     return Date.now().toString(36) + Math.random().toString(36).substring(2, 10);
 };
 
+// Add delay utility function
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
 // Define types for transcript management functions
 type AddTranscriptMessageType = (itemId: string, role: "user" | "assistant" | "system", text: string, properties?: any[]) => void;
 type UpdateTranscriptMessageType = (itemId: string, textDelta: string, isDelta: boolean) => void;
@@ -53,6 +56,9 @@ export function useHandleServerEvent({
   
   // Track the ID of the simulated message to filter it out
   const simulatedMessageIdRef = useRef<string | null>(null);
+  
+  // Add a new ref to track if we're currently transferring agents
+  const isTransferringAgentRef = useRef(false);
 
   const handleFunctionCall = async (functionCallParams: {
     name: string;
@@ -148,6 +154,9 @@ export function useHandleServerEvent({
 
         // Handle potential agent transfer signaled by tool logic
         if (fnResult && fnResult.destination_agent) {
+          // Set the transferring flag to true - used to prevent multiple response.create events
+          isTransferringAgentRef.current = true;
+          
           const isSilent = fnResult.silentTransfer === true;
 
           console.log(
@@ -203,14 +212,31 @@ export function useHandleServerEvent({
                 is_verified: newAgentConfig.metadata.is_verified
               });
             }
+            
+            // First cancel any active response to avoid the "conversation_already_has_active_response" error
+            if (hasActiveResponseRef.current) {
+              console.log("[handleFunctionCall] Cancelling active response before transfer");
+              sendClientEvent({ type: "response.cancel" }, "(cancelling before transfer)");
+              // Short delay to ensure the cancellation is processed
+              await delay(100);
+              hasActiveResponseRef.current = false;
+            }
+            
             // Update the agent state in the parent component
             setSelectedAgentName(fnResult.destination_agent);
 
+            // ALL transfers should be silent by default
+            let silentTransfer = isSilent || true; // Force silent transfers - ALL agent transfers should be silent
             // Check if this is the scheduling agent (should be silent)
-            let silentTransfer = isSilent; // Start with the initial value
             if (newAgentConfig && newAgentConfig.name === "scheduleMeeting") {
               console.log("[handleFunctionCall] Always performing silent transfer to scheduling agent");
               silentTransfer = true; // Always silent transfer for scheduleMeeting
+            }
+            
+            // Authentication agent transfers should also be silent
+            if (newAgentConfig && newAgentConfig.name === "authentication") {
+              console.log("[handleFunctionCall] Always performing silent transfer to authentication agent");
+              silentTransfer = true; // Always silent transfer for authentication
             }
 
             // Use silentTransfer variable for the condition
@@ -222,11 +248,39 @@ export function useHandleServerEvent({
                 console.log("[handleFunctionCall] Scheduling agent transfer - triggering automatic welcome/slot fetch");
                 // Allow a small delay for the transfer to complete before triggering the response
                 setTimeout(() => {
-                  sendClientEvent({ type: "response.create" }, "(auto-trigger response after scheduling transfer)");
-                }, 150); // Slightly increased delay
+                  // Before creating a new response, make sure there's no active one
+                  if (hasActiveResponseRef.current) {
+                    console.log("[handleFunctionCall] Cancelling active response before triggering new one");
+                    sendClientEvent({ type: "response.cancel" }, "(cancelling before new response)");
+                    // Short delay to ensure the cancellation is processed
+                    setTimeout(() => {
+                      sendClientEvent({ type: "response.create" }, "(auto-trigger response after scheduling transfer)");
+                    }, 100);
+                  } else {
+                    sendClientEvent({ type: "response.create" }, "(auto-trigger response after scheduling transfer)");
+                  }
+                }, 200); // Increased delay
+              }
+              
+              // Also trigger automatic response for authentication agent transfers
+              if (newAgentConfig && newAgentConfig.name === "authentication") {
+                console.log("[handleFunctionCall] Authentication agent transfer - triggering automatic response");
+                setTimeout(() => {
+                  // Before creating a new response, make sure there's no active one
+                  if (hasActiveResponseRef.current) {
+                    console.log("[handleFunctionCall] Cancelling active response before triggering new one");
+                    sendClientEvent({ type: "response.cancel" }, "(cancelling before new response)");
+                    // Short delay to ensure the cancellation is processed
+                    setTimeout(() => {
+                      sendClientEvent({ type: "response.create" }, "(auto-trigger response after authentication transfer)");
+                    }, 100);
+                  } else {
+                    sendClientEvent({ type: "response.create" }, "(auto-trigger response after authentication transfer)");
+                  }
+                }, 200);
               }
             } else {
-              // Only send non-silent transfers
+              // Only send non-silent transfers (should be rare or never used now)
               sendClientEvent({
                 type: "conversation.item.create",
                 item: {
@@ -242,6 +296,12 @@ export function useHandleServerEvent({
               });
             }
 
+            // Set a timeout to reset the transferring flag
+            setTimeout(() => {
+              isTransferringAgentRef.current = false;
+              console.log("[handleFunctionCall] Reset transferring flag after timeout");
+            }, 500);
+            
             return; // Stop further processing in this handler
           } else {
               console.error(`[handleFunctionCall] Destination agent "${fnResult.destination_agent}" not found.`);
@@ -255,6 +315,8 @@ export function useHandleServerEvent({
                    },
                });
                sendClientEvent({ type: "response.create" }); // Let the current agent respond to the failure
+               // Reset transferring flag
+               isTransferringAgentRef.current = false;
                return;
           }
           // No return here if newAgentConfig was not found initially
@@ -513,6 +575,12 @@ export function useHandleServerEvent({
         hasActiveResponseRef.current = false;
         console.log(`[Server Event] Response done, marked as inactive`);
         
+        // Don't trigger function calls during agent transfers
+        if (isTransferringAgentRef.current) {
+          console.log(`[Server Event] Skipping function call execution during agent transfer`);
+          return;
+        }
+        
         if (serverEvent.response?.output) {
           serverEvent.response.output.forEach((outputItem) => {
             if (
@@ -596,7 +664,10 @@ export function useHandleServerEvent({
            }
            
            // Add error message to transcript
-           addTranscriptMessage(generateSafeId(), 'system', `Server Error (${errorCode}): ${errorMessage}`);
+           // Only add visible error message for non-"conversation_already_has_active_response" errors
+           if (errorCode !== "conversation_already_has_active_response") {
+             addTranscriptMessage(generateSafeId(), 'system', `Server Error (${errorCode}): ${errorMessage}`);
+           }
            break;
        }
 
@@ -626,7 +697,7 @@ export function useHandleServerEvent({
   ]);
 
   // Expose a function to check if a response is active before creating a new one
-  const canCreateResponse = () => !hasActiveResponseRef.current;
+  const canCreateResponse = () => !hasActiveResponseRef.current && !isTransferringAgentRef.current;
 
   // Return both the event handler ref and the canCreateResponse function
   return {
