@@ -130,6 +130,10 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
     date: '',
     time: ''
   });
+  
+  // Add state to track verification success
+  const [verificationSuccessful, setVerificationSuccessful] = useState<boolean>(false);
+  const [showVerificationSuccess, setShowVerificationSuccess] = useState<boolean>(false);
 
   // Add state to specifically track if verification is *currently* needed (distinct from showVerificationScreen)
   const [isVerifying, setIsVerifying] = useState<boolean>(false);
@@ -1191,13 +1195,28 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
     initialSessionSetupDoneRef // initialSessionSetupDoneRef should be stable
   ]);
 
+  // Track the previous agent name for transition detection
+  const prevAgentNameRef = useRef<string | null>(null);
+  // Add a ref to track if we've already shown the verification success message
+  const hasShownSuccessMessageRef = useRef<boolean>(false);
+
   // Add useEffect to monitor agent changes and display the scheduling UI
   useEffect(() => {
+    // Skip effect if there's no real change
+    if (prevAgentNameRef.current === selectedAgentName) {
+      return;
+    }
+    
+    const wasFromAuthentication = prevAgentNameRef.current === "authentication";
+    
     if (selectedAgentName === "authentication") {
       console.log("[Agent Change] Detected switch to authentication agent.");
       setIsVerifying(true); // Show verification UI elements
       setShowTimeSlots(false); // Hide scheduling UI
       // Do not reset OTP screen here as we want it to show after verification
+      
+      // Reset success message flag when entering authentication again
+      hasShownSuccessMessageRef.current = false;
     } else if (selectedAgentName === "scheduleMeeting") {
       console.log("[Agent Change] Detected switch to scheduleMeeting agent.");
       setIsVerifying(false); // Hide verification UI if switching *to* scheduling
@@ -1212,11 +1231,45 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       }
     } else if (selectedAgentName === "realEstate") {
       console.log("[Agent Change] Switched back to realEstate agent.");
+      
+      // Check if this is a transition from authentication agent AND we haven't shown the success message yet
+      if (wasFromAuthentication && !hasShownSuccessMessageRef.current) {
+        console.log("[Agent Change] Detected transition from authentication to realEstate - showing verification success");
+        
+        // Mark that we've shown the success message to prevent infinite loops
+        hasShownSuccessMessageRef.current = true;
+        
+        // Set success flag without triggering rerendering loop
+        setVerificationSuccessful(true);
+        setShowVerificationSuccess(true);
+        
+        // Hide the success message after a few seconds
+        setTimeout(() => {
+          setShowVerificationSuccess(false);
+        }, 3000);
+        
+        // Trigger a welcome back message from the realEstate agent
+        setTimeout(() => {
+          if (canCreateResponse()) {
+            const welcomeMsg = "Thank you for verifying your identity. How can I help you with properties today?";
+            const systemId = generateSafeId();
+            addTranscriptMessage(systemId, 'assistant', welcomeMsg);
+            
+            // Trigger the agent to generate a proper response
+            sendClientEvent({ type: "response.create" }, "(trigger response after verification)");
+          }
+        }, 500);
+      }
+      
       setIsVerifying(false); // Hide verification UI
       setShowOtpScreen(false); // Hide OTP screen
       setShowTimeSlots(false); // Hide scheduling UI
       setAvailableSlots({}); 
     }
+    
+    // Update previous agent ref for next transition
+    prevAgentNameRef.current = selectedAgentName;
+    
     // Reset setup flag if agent changes (handled in separate effect)
   }, [selectedAgentName, selectedProperty]);
 
@@ -1427,8 +1480,9 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
     );
     sendClientEvent({ type: "response.create" }, "(trigger response after OTP)");
 
-    // Hide the OTP screen
+    // Hide the OTP screen and show a temporary processing state
     setShowOtpScreen(false);
+    addTranscriptMessage(generateSafeId(), 'system', 'Verifying your code...');
     
   }, [sendClientEvent, addTranscriptMessage, generateSafeId]);
 
@@ -1618,6 +1672,26 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
                   <OTPInput onSubmit={handleOtpSubmit} />
                 </div>
               </div>
+            )}
+            
+            {/* Show verification success message */}
+            {showVerificationSuccess && (
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -20 }}
+                className="w-full bg-green-600 text-white rounded-lg p-4 mb-4 flex items-center shadow-lg"
+              >
+                <div className="mr-3 bg-white rounded-full p-1 text-green-600">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="20 6 9 17 4 12"></polyline>
+                  </svg>
+                </div>
+                <div>
+                  <h3 className="font-medium">Verification Successful!</h3>
+                  <p className="text-sm opacity-90">Your identity has been verified.</p>
+                </div>
+              </motion.div>
             )}
             
             {/* Show TimePick component ONLY if scheduling AND NOT verifying */}

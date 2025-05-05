@@ -196,7 +196,7 @@ CONTEXT: You might be called from the main real estate agent OR from the schedul
 
       // Fix for chatbot_id issue
       let final_chatbot_id = chatbot_id;
-      if (chatbot_id === "default" || !UUID_REGEX.test(chatbot_id)) {
+      if (chatbot_id === "default" || !UUID_REGEX.test(chatbot_id) || chatbot_id === org_id) {
         console.log("[submitPhoneNumber] Invalid or default chatbot_id detected:", chatbot_id);
         // Use a fallback UUID or retrieve it from auth agent metadata
         if (authentication.metadata?.chatbot_id && UUID_REGEX.test(authentication.metadata.chatbot_id)) {
@@ -217,7 +217,9 @@ CONTEXT: You might be called from the main real estate agent OR from the schedul
       const isSimpleDummyId = session_id.startsWith('session_') || 
                               session_id.includes('123') ||
                               session_id.length < 16 ||
-                              !session_id.match(/^[a-zA-Z0-9-_]+$/);
+                              !session_id.match(/^[a-zA-Z0-9-_]+$/) ||
+                              session_id === org_id || // Additional check to catch org_id being used as session_id
+                              session_id === chatbot_id; // Additional check to catch chatbot_id being used as session_id
                               
       // Always prioritize stored metadata session_id if available
       if (!isValidUUID || isSimpleDummyId) {
@@ -238,18 +240,41 @@ CONTEXT: You might be called from the main real estate agent OR from the schedul
         console.log(`[submitPhoneNumber] Using provided session_id which appears valid: ${final_session_id}`);
       }
 
-      // Final validation to ensure we're not sending any dummy values to the API
-      if (final_session_id.startsWith('session_') || final_session_id.includes('123')) {
-        // If we STILL have a dummy session ID, force use metadata or generate a guaranteed valid one
-        if (authentication.metadata?.session_id && authentication.metadata.session_id.length > 16) {
-          final_session_id = authentication.metadata.session_id;
-          console.log(`[submitPhoneNumber] Final check: Using metadata session_id: ${final_session_id}`);
-        } else {
-          final_session_id = Date.now().toString(36) + Math.random().toString(36).substring(2, 15);
-          console.log(`[submitPhoneNumber] Final check: Replaced dummy session_id with generated ID: ${final_session_id}`);
+      // Critical additional check to ensure all three IDs are different
+      if (final_session_id === final_org_id || final_chatbot_id === final_org_id || final_session_id === final_chatbot_id) {
+        console.error("[submitPhoneNumber] CRITICAL ERROR: Detected duplicate IDs in the three key fields");
+        console.log(`[submitPhoneNumber] session_id: ${final_session_id}, org_id: ${final_org_id}, chatbot_id: ${final_chatbot_id}`);
+        
+        // Extra safety check - if any are still duplicated, force use of metadata values
+        if (authentication.metadata) {
+          if (final_session_id === final_org_id && authentication.metadata.session_id) {
+            final_session_id = authentication.metadata.session_id;
+            console.log(`[submitPhoneNumber] Emergency fix: Using metadata session_id: ${final_session_id}`);
+          }
           
-          if (authentication.metadata) {
-            authentication.metadata.session_id = final_session_id;
+          if (final_chatbot_id === final_org_id && authentication.metadata.chatbot_id) {
+            final_chatbot_id = authentication.metadata.chatbot_id;
+            console.log(`[submitPhoneNumber] Emergency fix: Using metadata chatbot_id: ${final_chatbot_id}`);
+          }
+          
+          // Last resort - generate new IDs if still duplicated
+          if (final_session_id === final_org_id || final_chatbot_id === final_org_id) {
+            if (final_session_id === final_org_id) {
+              final_session_id = Date.now().toString(36) + Math.random().toString(36).substring(2, 15);
+              console.log(`[submitPhoneNumber] Last resort: Generated new unique session_id: ${final_session_id}`);
+            }
+            
+            if (final_chatbot_id === final_org_id) {
+              // Use stored_chatbot_id from metadata
+              if ((authentication.metadata as any)?.stored_chatbot_id) {
+                final_chatbot_id = (authentication.metadata as any).stored_chatbot_id;
+                console.log(`[submitPhoneNumber] Last resort: Using stored_chatbot_id from metadata: ${final_chatbot_id}`);
+              } else {
+                // Something is really wrong, fallback to hardcoded value
+                final_chatbot_id = "54f1cfb5-c678-42a4-8602-9f21f7764658"; // Known working ID
+                console.log(`[submitPhoneNumber] Last resort: Using hardcoded chatbot_id: ${final_chatbot_id}`);
+              }
+            }
           }
         }
       }
@@ -390,7 +415,7 @@ CONTEXT: You might be called from the main real estate agent OR from the schedul
 
       // Fix for chatbot_id issue
       let final_chatbot_id = chatbot_id;
-      if (chatbot_id === "default" || !UUID_REGEX.test(chatbot_id)) {
+      if (chatbot_id === "default" || !UUID_REGEX.test(chatbot_id) || chatbot_id === org_id) {
         console.log("[verifyOTP] Invalid or default chatbot_id detected:", chatbot_id);
         // Use a fallback UUID or retrieve it from auth agent metadata
         if (authentication.metadata?.chatbot_id && UUID_REGEX.test(authentication.metadata.chatbot_id)) {
@@ -411,7 +436,9 @@ CONTEXT: You might be called from the main real estate agent OR from the schedul
       const isSimpleDummyId = session_id.startsWith('session_') || 
                               session_id.includes('123') ||
                               session_id.length < 16 ||
-                              !session_id.match(/^[a-zA-Z0-9-_]+$/);
+                              !session_id.match(/^[a-zA-Z0-9-_]+$/) ||
+                              session_id === org_id || // Additional check to catch org_id being used as session_id
+                              session_id === chatbot_id; // Additional check to catch chatbot_id being used as session_id
                               
       // Always prioritize stored metadata session_id if available
       if (!isValidUUID || isSimpleDummyId) {
@@ -432,18 +459,41 @@ CONTEXT: You might be called from the main real estate agent OR from the schedul
         console.log(`[verifyOTP] Using provided session_id which appears valid: ${final_session_id}`);
       }
 
-      // Final validation to ensure we're not sending any dummy values to the API
-      if (final_session_id.startsWith('session_') || final_session_id.includes('123')) {
-        // If we STILL have a dummy session ID, force use metadata or generate a guaranteed valid one
-        if (authentication.metadata?.session_id && authentication.metadata.session_id.length > 16) {
-          final_session_id = authentication.metadata.session_id;
-          console.log(`[verifyOTP] Final check: Using metadata session_id: ${final_session_id}`);
-        } else {
-          final_session_id = Date.now().toString(36) + Math.random().toString(36).substring(2, 15);
-          console.log(`[verifyOTP] Final check: Replaced dummy session_id with generated ID: ${final_session_id}`);
+      // Critical additional check to ensure all three IDs are different
+      if (final_session_id === final_org_id || final_chatbot_id === final_org_id || final_session_id === final_chatbot_id) {
+        console.error("[verifyOTP] CRITICAL ERROR: Detected duplicate IDs in the three key fields");
+        console.log(`[verifyOTP] session_id: ${final_session_id}, org_id: ${final_org_id}, chatbot_id: ${final_chatbot_id}`);
+        
+        // Extra safety check - if any are still duplicated, force use of metadata values
+        if (authentication.metadata) {
+          if (final_session_id === final_org_id && authentication.metadata.session_id) {
+            final_session_id = authentication.metadata.session_id;
+            console.log(`[verifyOTP] Emergency fix: Using metadata session_id: ${final_session_id}`);
+          }
           
-          if (authentication.metadata) {
-            authentication.metadata.session_id = final_session_id;
+          if (final_chatbot_id === final_org_id && authentication.metadata.chatbot_id) {
+            final_chatbot_id = authentication.metadata.chatbot_id;
+            console.log(`[verifyOTP] Emergency fix: Using metadata chatbot_id: ${final_chatbot_id}`);
+          }
+          
+          // Last resort - generate new IDs if still duplicated
+          if (final_session_id === final_org_id || final_chatbot_id === final_org_id) {
+            if (final_session_id === final_org_id) {
+              final_session_id = Date.now().toString(36) + Math.random().toString(36).substring(2, 15);
+              console.log(`[verifyOTP] Last resort: Generated new unique session_id: ${final_session_id}`);
+            }
+            
+            if (final_chatbot_id === final_org_id) {
+              // Use stored_chatbot_id from metadata
+              if ((authentication.metadata as any)?.stored_chatbot_id) {
+                final_chatbot_id = (authentication.metadata as any).stored_chatbot_id;
+                console.log(`[verifyOTP] Last resort: Using stored_chatbot_id from metadata: ${final_chatbot_id}`);
+              } else {
+                // Something is really wrong, fallback to hardcoded value
+                final_chatbot_id = "54f1cfb5-c678-42a4-8602-9f21f7764658"; // Known working ID
+                console.log(`[verifyOTP] Last resort: Using hardcoded chatbot_id: ${final_chatbot_id}`);
+              }
+            }
           }
         }
       }
