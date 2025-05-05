@@ -14,22 +14,35 @@ const getScheduleMeetingInstructions = (metadata: AgentMetadata | undefined | nu
   const phoneNumber = metadata?.phone_number;
   const propertyIdForScheduling = (metadata as any)?.property_id_to_schedule; // Access the passed property ID
 
-  return `You are a helpful assistant that schedules property visits for users who have already been verified.
+  return `You are a helpful scheduling assistant for property visits. Your tone is friendly, professional, and efficient.
 
-IMPORTANT: Only proceed if the user is verified (${isVerified ? 'they ARE verified' : 'they are NOT verified - explain and transfer silently back to realEstate'}).
+PROPERTY CONTEXT: You should schedule a visit for property ID: '${propertyIdForScheduling || '[WILL BE DETERMINED FROM METADATA]'}'.
 
-PROPERTY CONTEXT: You should schedule the visit for property ID: '${propertyIdForScheduling || '[UNKNOWN - USE getAvailableSlots TO CONFIRM]'}'.
+**YOUR FIRST MESSAGE**: Immediately introduce yourself: "Hello! I'm the scheduling assistant. I'll help you schedule a visit to see the property." Then call getAvailableSlots right away.
 
-Your goal is a multi-step process:
-1.  Retrieve Available Slots: Your **FIRST ACTION** MUST BE to call the 'getAvailableSlots' tool. Use the property ID: '${propertyIdForScheduling || '[TOOL WILL USE DEFAULT IF MISSING]'}'. Do NOT skip this step.
-2.  Present Slots: Inform the user about the available slots (e.g., "Here are the available slots..."). The UI will display cards for selection.
-3.  Receive User Selection: The user will respond by selecting a time slot (e.g., "Monday 2pm to 5pm sounds good").
-4.  Check for User Details (AFTER user selects a slot):
-    - Check if you already know the user's name ('${customerName || 'unknown'}') and phone number ('${phoneNumber || 'unknown'}').
-    - If EITHER name or phone number is missing, ask the user for BOTH (e.g., "To confirm the booking for [Selected Slot], please provide your full name and phone number."). Wait for their response.
-5.  Receive User Details (if needed): The user will provide their name and phone number.
-6.  Schedule the Visit: Once you have the selected slot AND the user's name and phone number (from metadata or their latest message), call the 'scheduleVisit' tool. Pass 'visitDateTime', 'property_id' ('${propertyIdForScheduling || '[TOOL WILL USE DEFAULT IF MISSING]'}'), 'customer_name', and 'phone_number'.
-7.  Confirm Booking & Transfer: After 'scheduleVisit' succeeds (it will return success: true), confirm the booking details (e.g., "OK, I've scheduled your visit for [Selected Slot].") and mention the main agent will take over. The transfer back will be silent.
+STRICTLY FOLLOW THIS EXACT FLOW:
+1. INTRODUCTION: Greet the user and explain you're the scheduling assistant.
+2. RETRIEVE SLOTS: Call getAvailableSlots to get the available time slots.
+3. PRESENT SLOTS: Tell the user: "Here are the available dates and times for your visit. We have slots at 11:00 AM and 4:00 PM on weekdays. Please select a date and time that works for you." The UI will display a calendar.
+4. USER SELECTION: Wait for the user to select a date and time from the UI.
+5. VERIFICATION CHECK: 
+   - Once they select a time, check the user_verification_status from getAvailableSlots:
+   - If status is "verified" (${isVerified ? 'which is the case now' : 'which is NOT the case now'}):
+     * Confirm with existing details: "Great! I'll schedule your visit for [SELECTED_DATE] at [SELECTED_TIME]. I have your contact info as ${customerName || '[NAME NOT PROVIDED]'} and ${phoneNumber || '[PHONE NOT PROVIDED]'}. Is this correct?"
+   - If status is "unverified":
+     * Say: "I need to verify your information before confirming the booking. Please provide your full name and phone number."
+     * Wait for the user to provide this information
+     * Then say: "Thank you. I'm sending a verification code to your phone. Please enter the code when you receive it."
+     * The UI will show a verification code entry screen (you don't need to implement this logic)
+     * After they enter the code (simulate this by their next message), say: "Verification successful!"
+6. SCHEDULE VISIT: Call scheduleVisit with all required information.
+7. CONFIRM BOOKING: After success, say: "Great news! Your visit has been confirmed for [SELECTED_DATE] at [SELECTED_TIME]. You'll receive a confirmation SMS and calendar invite. The real estate agent will be available to answer any other questions."
+
+CRITICAL INSTRUCTIONS:
+- FOLLOW THIS EXACT FLOW with no deviations
+- ALWAYS assume the user enters a valid verification code
+- TREAT the UI as capable of showing calendar and time slots, you don't need to list all times
+- NEVER skip verification for unverified users
 
 LANGUAGE INSTRUCTIONS:
 - Respond ONLY in ${language}.
@@ -86,6 +99,7 @@ const scheduleMeetingAgent: AgentConfig = {
       console.log("  - property_id from param:", property_id);
       console.log("  - property_id_to_schedule from metadata:", (metadata as any)?.property_id_to_schedule);
       console.log("  - project_ids from metadata:", metadata?.project_ids);
+      console.log("  - is_verified:", metadata?.is_verified);
       
       // Use property_id_to_schedule from metadata if property_id is missing
       let effectivePropertyId = property_id;
@@ -100,25 +114,50 @@ const scheduleMeetingAgent: AgentConfig = {
         console.log(`[getAvailableSlots] Falling back to first project_id: ${effectivePropertyId}`);
       }
       
-      // --- TODO: Implement API call to backend to fetch actual slots --- 
-      // Replace with actual API call
-      // const response = await fetch(SLOTS_API_URL, { property_id: effectivePropertyId, ... });
-      // const data = await response.json();
-
-      // --- Dummy data for now --- 
-      const dummySlots = {
-        "Monday": ["8:00 am - 12:00 pm", "2:00 pm - 5:00 pm"],
-        "Tuesday": ["9:00 am - 1:00 pm"],
-        "Wednesday": ["10:00 am - 4:00 pm"],
-        "Thursday": ["8:00 am - 12:00 pm", "2:00 pm - 5:00 pm"],
-        "Friday": ["9:00 am - 1:00 pm"]
-      };
+      // --- Get property name from metadata if available ---
+      let propertyName = "this property";
+      if (metadata?.active_project && metadata.active_project !== "N/A") {
+        propertyName = metadata.active_project;
+      }
+      
+      // --- Simplified calendar data with exactly two time slots per day ---
+      const today = new Date();
+      // Get the current month
+      const currentMonth = today.getMonth();
+      const currentYear = today.getFullYear();
+      const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
+      
+      // Create calendar for current month
+      const dummySlots: Record<string, string[]> = {};
+      const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+      const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+      
+      // Start from tomorrow
+      const startDay = today.getDate() + 1;
+      
+      // Create slots for the next 14 days (or until end of month)
+      for (let i = startDay; i <= Math.min(startDay + 14, daysInMonth); i++) {
+        const date = new Date(currentYear, currentMonth, i);
+        // Skip weekends
+        if (date.getDay() === 0 || date.getDay() === 6) continue;
+        
+        const dayName = days[date.getDay()];
+        const dateStr = `${dayName}, ${monthNames[currentMonth]} ${i}`;
+        
+        // ALWAYS use exactly these two time slots
+        dummySlots[dateStr] = ["11:00 AM", "4:00 PM"];
+      }
+      
+      // Check if user is verified
+      const isVerified = metadata?.is_verified === true;
+      const userVerificationStatus = isVerified ? "verified" : "unverified";
 
       return { 
         slots: dummySlots, 
-        message: "Here are the available time slots for this week. Please select one.", // Message for LLM
-        property_id: effectivePropertyId, // Return the effective property ID
-        // UI hint: maybe add a flag like displaySlots: true?
+        message: `Here are the available time slots for visiting ${propertyName}. Please select a date and time that works for you.`, 
+        property_id: effectivePropertyId,
+        property_name: propertyName,
+        user_verification_status: userVerificationStatus
       };
     },
     scheduleVisit: async ({ visitDateTime, property_id: propertyIdFromArgs, customer_name: nameFromArgs, phone_number: phoneFromArgs }: { visitDateTime: string; property_id?: string; customer_name?: string; phone_number?: string }) => {

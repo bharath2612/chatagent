@@ -95,7 +95,22 @@ export function useHandleServerEvent({
         (a) => a.name === selectedAgentName
       );
 
-      if (currentAgent?.metadata) {
+      if (!currentAgent) {
+        console.error(`[handleFunctionCall] Agent configuration not found for name: ${selectedAgentName}`);
+        const errorResult = { error: `Agent ${selectedAgentName} configuration not found.` };
+        sendClientEvent({
+          type: "conversation.item.create",
+          item: {
+            type: "function_call_output",
+            call_id: functionCallParams.call_id,
+            output: JSON.stringify(errorResult),
+          },
+        });
+        sendClientEvent({ type: "response.create" });
+        return; // Stop processing if agent config is missing
+      }
+
+      if (currentAgent.metadata) {
         const phoneNumberFromArgs = args.phone_number;
         const metadata = { ...currentAgent.metadata }; // Copy metadata
 
@@ -123,9 +138,13 @@ export function useHandleServerEvent({
       }
 
 
-      if (currentAgent?.toolLogic?.[functionCallParams.name]) {
-        const fn = currentAgent.toolLogic[functionCallParams.name];
-        const fnResult = await fn(args, transcriptItems || []);
+      // Check if the tool logic actually exists on the current agent
+      const toolFunction = currentAgent?.toolLogic?.[functionCallParams.name];
+
+      if (typeof toolFunction === 'function') {
+        // Tool logic exists, proceed to call it
+        console.log(`[handleFunctionCall] Executing tool logic for "${functionCallParams.name}" on agent "${selectedAgentName}"`);
+        const fnResult = await toolFunction(args, transcriptItems || []);
 
         // Handle potential agent transfer signaled by tool logic
         if (fnResult && fnResult.destination_agent) {
@@ -168,6 +187,15 @@ export function useHandleServerEvent({
             // Use silentTransfer variable for the condition
             if (silentTransfer) {
               console.log("[handleFunctionCall] Silent transfer - skipping function_call_output event.");
+              
+              // ADD BACK: Automatic response trigger specifically for scheduleMeeting agent
+              if (newAgentConfig && newAgentConfig.name === "scheduleMeeting") {
+                console.log("[handleFunctionCall] Scheduling agent transfer - triggering automatic welcome/slot fetch");
+                // Allow a small delay for the transfer to complete before triggering the response
+                setTimeout(() => {
+                  sendClientEvent({ type: "response.create" }, "(auto-trigger response after scheduling transfer)");
+                }, 150); // Slightly increased delay
+              }
             } else {
               // Only send non-silent transfers
               sendClientEvent({
@@ -188,54 +216,57 @@ export function useHandleServerEvent({
             return; // Stop further processing in this handler
           } else {
               console.error(`[handleFunctionCall] Destination agent "${fnResult.destination_agent}" not found.`);
+              // Inform the LLM about the failure
+               sendClientEvent({
+                   type: "conversation.item.create",
+                   item: {
+                       type: "function_call_output",
+                       call_id: functionCallParams.call_id,
+                       output: JSON.stringify({ error: `Agent ${fnResult.destination_agent} not found.` }),
+                   },
+               });
+               sendClientEvent({ type: "response.create" }); // Let the current agent respond to the failure
+               return;
           }
+          // No return here if newAgentConfig was not found initially
+        } // End of agent transfer logic
 
-          return; // Stop further processing in this handler
-        }
 
-
-        // Handle silent tool calls
+        // Handle silent tool calls (non-transfer)
         if (fnResult && fnResult.silent === true) {
           console.log(
             `[handleFunctionCall] Silent mode for ${functionCallParams.name}, not sending output to LLM.`
           );
-          // Optional: Decide if a response.create is still needed
-           sendClientEvent({ type: "response.create" });
+          // Optional: Decide if a response.create is still needed even for silent tools
+          // sendClientEvent({ type: "response.create" });
           return;
         }
 
-        // Add this block inside the handleFunctionCall function, after parsing the response for getAvailableSlots
+        // Specific handling for getAvailableSlots (might be redundant now but keep for safety)
         if (functionCallParams.name === "getAvailableSlots") {
-          try {
-            const result = JSON.parse(functionCallParams.arguments);
-            const fnResult = await fn(result, transcriptItems || []);
-            
-            console.log("[handleFunctionCall] getAvailableSlots result:", fnResult);
-            
-            // Store the property_id in the agent's metadata for later use
-            if (fnResult.property_id && currentAgent.metadata) {
-              console.log(`[handleFunctionCall] Storing property_id from getAvailableSlots: ${fnResult.property_id}`);
-              (currentAgent.metadata as any).lastReturnedPropertyId = fnResult.property_id;
-            }
-            
-            // Continue with normal function output
-            sendClientEvent({
-              type: "conversation.item.create",
-              item: {
-                type: "function_call_output",
-                call_id: functionCallParams.call_id,
-                output: JSON.stringify(fnResult),
-              },
-            });
-            sendClientEvent({ type: "response.create" });
-            return; // Skip the regular function handling
-          } catch (error) {
-            console.error("[handleFunctionCall] Error handling getAvailableSlots:", error);
-            // Continue with regular function handling
+          // No need to call fn again, we already have fnResult
+          console.log("[handleFunctionCall] getAvailableSlots result:", fnResult);
+          
+          // Store the property_id in the agent's metadata for later use
+          if (fnResult.property_id && currentAgent.metadata) {
+            console.log(`[handleFunctionCall] Storing property_id from getAvailableSlots: ${fnResult.property_id}`);
+            (currentAgent.metadata as any).lastReturnedPropertyId = fnResult.property_id;
           }
+          
+          // Send function output
+          sendClientEvent({
+            type: "conversation.item.create",
+            item: {
+              type: "function_call_output",
+              call_id: functionCallParams.call_id,
+              output: JSON.stringify(fnResult),
+            },
+          });
+          sendClientEvent({ type: "response.create" });
+          return; // Skip the regular function handling below
         }
 
-        // Send regular function output
+        // Send regular function output for other non-silent, non-transferring tools
         sendClientEvent({
           type: "conversation.item.create",
           item: {
@@ -247,19 +278,19 @@ export function useHandleServerEvent({
         sendClientEvent({ type: "response.create" });
 
       } else {
-          // Handle case where tool logic is not found (should ideally not happen if tools are defined correctly)
-          console.error(`[handleFunctionCall] Tool logic not found for function: ${functionCallParams.name}`);
-          const errorResult = { error: `Tool logic for ${functionCallParams.name} not implemented.` };
-          sendClientEvent({
-               type: "conversation.item.create",
-               item: {
-                 type: "function_call_output",
-                 call_id: functionCallParams.call_id,
-                 output: JSON.stringify(errorResult),
-               },
-           });
-           // Decide if we should trigger a response even if the tool failed
-           // sendClientEvent({ type: "response.create" });
+        // Handle case where tool logic is NOT found for the current agent
+        console.error(`[handleFunctionCall] Tool logic for function "${functionCallParams.name}" not found on agent "${selectedAgentName}".`);
+        const errorResult = { error: `Agent ${selectedAgentName} cannot perform action ${functionCallParams.name}.` };
+        sendClientEvent({
+          type: "conversation.item.create",
+          item: {
+            type: "function_call_output",
+            call_id: functionCallParams.call_id,
+            output: JSON.stringify(errorResult),
+          },
+        });
+        // Trigger a response so the agent can explain the error
+         sendClientEvent({ type: "response.create" }); 
       }
     } catch (error: any) {
       console.error(
