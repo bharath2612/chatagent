@@ -42,6 +42,9 @@ export interface AgentMetadata {
   project_locations?: Record<string, string>;
   has_scheduled?: boolean;
   language?: string;
+  came_from?: string;
+  property_id_to_schedule?: string;
+  lastReturnedPropertyId?: string;
 }
 
 export interface AgentConfig {

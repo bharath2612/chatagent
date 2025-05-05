@@ -535,6 +535,18 @@ const realEstateAgent: AgentConfig = {
 
             console.log("[fetchOrgMetadata] Received metadata:", metadataResult);
             
+            // Log critical IDs for debugging
+            console.log("[fetchOrgMetadata] Critical ID fields in response:", {
+                chatbot_id: metadataResult.chatbot_id,
+                org_id: metadataResult.org_id,
+                session_id: metadataResult.session_id
+            });
+            
+            // Ensure org_id is preserved from the API response
+            if (!metadataResult.org_id) {
+                console.warn("[fetchOrgMetadata] No org_id in response, this will cause issues with authentication");
+            }
+            
             // Create project_id_map from returned data if not already present
             if (!metadataResult.project_id_map && metadataResult.project_ids && metadataResult.project_names) {
                 // Make sure arrays are the same length
@@ -562,6 +574,13 @@ const realEstateAgent: AgentConfig = {
             realEstateAgent.metadata = { ...metadataResult, session_id }; // Overwrite existing, ensure session_id persists
             realEstateAgent.instructions = getInstructions(realEstateAgent.metadata);
             console.log("[fetchOrgMetadata] Updated agent instructions based on new metadata.");
+            
+            // Log the final metadata state for debugging
+            console.log("[fetchOrgMetadata] Final metadata state:", {
+                chatbot_id: realEstateAgent.metadata.chatbot_id,
+                org_id: realEstateAgent.metadata.org_id,
+                session_id: realEstateAgent.metadata.session_id
+            });
 
             return metadataResult; // Return fetched metadata
 

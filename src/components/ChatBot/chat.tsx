@@ -446,7 +446,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
 
   // --- Handle Server Events (Wrap the hook's handler) --- 
   const handleServerEvent = useCallback((serverEvent: ServerEvent) => {
-    console.log("[handleServerEvent] Processing event:", serverEvent.type, JSON.stringify(serverEvent, null, 2)); 
+    // console.log("[handleServerEvent] Processing event:", serverEvent.type, JSON.stringify(serverEvent, null, 2)); 
 
     let assistantMessageHandledLocally = false; 
     let propertiesHandledLocally = false;
