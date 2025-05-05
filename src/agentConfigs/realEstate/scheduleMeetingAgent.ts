@@ -12,40 +12,41 @@ const getScheduleMeetingInstructions = (metadata: AgentMetadata | undefined | nu
   const isVerified = metadata?.is_verified ?? false;
   const customerName = metadata?.customer_name;
   const phoneNumber = metadata?.phone_number;
-  const propertyIdForScheduling = (metadata as any)?.property_id_to_schedule; // Access the passed property ID
+  const propertyIdForScheduling = (metadata as any)?.property_id_to_schedule;
+  const propertyName = (metadata as any)?.property_name || "the property"; // Get name if available
 
-  return `You are a helpful scheduling assistant for property visits. Your tone is friendly, professional, and efficient.
+  return `You are a helpful scheduling assistant for ${propertyName}. Your tone is friendly and efficient.
 
-PROPERTY CONTEXT: You should schedule a visit for property ID: '${propertyIdForScheduling || '[WILL BE DETERMINED FROM METADATA]'}'.
-
-**YOUR FIRST MESSAGE**: Immediately introduce yourself: "Hello! I'm the scheduling assistant. I'll help you schedule a visit to see the property." Then call getAvailableSlots right away.
+**VERY FIRST ACTION**: Your absolute FIRST task, BEFORE saying anything, is to call 'getAvailableSlots'.
 
 STRICTLY FOLLOW THIS EXACT FLOW:
-1. INTRODUCTION: Greet the user and explain you're the scheduling assistant.
-2. RETRIEVE SLOTS: Call getAvailableSlots to get the available time slots.
-3. PRESENT SLOTS: Tell the user: "Here are the available dates and times for your visit. We have slots at 11:00 AM and 4:00 PM on weekdays. Please select a date and time that works for you." The UI will display a calendar.
-4. USER SELECTION: Wait for the user to select a date and time from the UI.
-5. VERIFICATION CHECK: 
-   - Once they select a time, check the user_verification_status from getAvailableSlots:
-   - If status is "verified" (${isVerified ? 'which is the case now' : 'which is NOT the case now'}):
-     * Confirm with existing details: "Great! I'll schedule your visit for [SELECTED_DATE] at [SELECTED_TIME]. I have your contact info as ${customerName || '[NAME NOT PROVIDED]'} and ${phoneNumber || '[PHONE NOT PROVIDED]'}. Is this correct?"
-   - If status is "unverified":
-     * Say: "I need to verify your information before confirming the booking. Please provide your full name and phone number."
-     * Wait for the user to provide this information
-     * Then say: "Thank you. I'm sending a verification code to your phone. Please enter the code when you receive it."
-     * The UI will show a verification code entry screen (you don't need to implement this logic)
-     * After they enter the code (simulate this by their next message), say: "Verification successful!"
-6. SCHEDULE VISIT: Call scheduleVisit with all required information.
-7. CONFIRM BOOKING: After success, say: "Great news! Your visit has been confirmed for [SELECTED_DATE] at [SELECTED_TIME]. You'll receive a confirmation SMS and calendar invite. The real estate agent will be available to answer any other questions."
+1. CALL TOOL: Immediately call getAvailableSlots. Output ONLY the tool call.
+2. GREET & ASK DATE: After getAvailableSlots returns, THEN greet the user ("Hello! I'm the scheduling assistant for ${propertyName}.") and ask them to select a date: "Please select a date for your visit from the calendar below." The UI will display the calendar.
+3. WAIT FOR DATE: User selects a date from the UI.
+4. ASK TIME: Once date is selected (user will message like "Selected Tuesday, May 21"), ask for time: "Great. Please select a time: 11:00 AM or 4:00 PM." The UI will show time buttons.
+5. WAIT FOR TIME: User selects a time (user will message like "Selected 4:00 PM").
+6. CHECK VERIFICATION (using status from getAvailableSlots result):
+   - If user_verification_status was "verified":
+     * Confirm details: "Perfect! I have your details as ${customerName || '[Name not provided]'} and ${phoneNumber || '[Phone not provided]'}. To confirm your visit for ${propertyName} on [Selected Date] at [Selected Time], please reply 'Confirm'."
+     * Wait for user confirmation (e.g., "Confirm", "Yes").
+     * On confirmation, CALL TOOL: scheduleVisit.
+   - If user_verification_status was "unverified":
+     * CALL TOOL: requestAuthentication. DO NOT ask for name/phone yourself. Your turn ends.
+7. HANDLE scheduleVisit RESULT:
+   * If scheduleVisit tool succeeds (returns booking_confirmed: true):
+     * Confirm to user: "Great news, ${customerName || 'your visit'} for ${propertyName} on [Selected Date] at [Selected Time] is confirmed! You'll receive details shortly."
+     * CALL TOOL: completeScheduling. Your turn ends.
+   * If scheduleVisit tool fails:
+     * Inform user: "I encountered an issue scheduling your visit. Please try again later or contact support."
+     * CALL TOOL: completeScheduling (to return user to main agent). Your turn ends.
 
-CRITICAL INSTRUCTIONS:
-- FOLLOW THIS EXACT FLOW with no deviations
-- ALWAYS assume the user enters a valid verification code
-- TREAT the UI as capable of showing calendar and time slots, you don't need to list all times
-- NEVER skip verification for unverified users
+CRITICAL RULES:
+- Step 1 (getAvailableSlots) MUST be your first output.
+- Follow the flow exactly.
+- Let the authentication agent handle name/phone collection if needed.
+- End your turn immediately after calling requestAuthentication or completeScheduling.
 
-LANGUAGE INSTRUCTIONS:
-- Respond ONLY in ${language}.
+LANGUAGE: Respond ONLY in ${language}.
 `;
 };
 
@@ -58,7 +59,7 @@ const scheduleMeetingAgent: AgentConfig = {
     {
       type: "function",
       name: "getAvailableSlots",
-      description: "Retrieves available time slots for a property visit in the current week.",
+      description: "MUST be called first. Retrieves available dates/times for a property visit.",
       parameters: {
         type: "object",
         properties: {
@@ -70,8 +71,8 @@ const scheduleMeetingAgent: AgentConfig = {
     },
     {
       type: "function",
-      name: "scheduleVisit", // Renamed for consistency
-      description: "Schedules a property visit for a verified user AFTER getting available slots and confirming user details.",
+      name: "scheduleVisit",
+      description: "Schedules the visit AFTER date/time selection and verification (if needed).",
       parameters: {
         type: "object",
         properties: {
@@ -87,6 +88,18 @@ const scheduleMeetingAgent: AgentConfig = {
         required: ["visitDateTime", "property_id"],
         additionalProperties: false,
       },
+    },
+    {
+      type: "function",
+      name: "requestAuthentication", // NEW TOOL
+      description: "Transfers to the authentication agent when user details need verification.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+    {
+      type: "function",
+      name: "completeScheduling", // NEW TOOL
+      description: "Transfers back to the real estate agent after successful booking confirmation.",
+      parameters: { type: "object", properties: {}, required: [] },
     },
   ],
   toolLogic: {
@@ -154,7 +167,6 @@ const scheduleMeetingAgent: AgentConfig = {
 
       return { 
         slots: dummySlots, 
-        message: `Here are the available time slots for visiting ${propertyName}. Please select a date and time that works for you.`, 
         property_id: effectivePropertyId,
         property_name: propertyName,
         user_verification_status: userVerificationStatus
@@ -191,31 +203,28 @@ const scheduleMeetingAgent: AgentConfig = {
         console.log(`[scheduleVisit] Falling back to first project_id: ${property_id}`);
       }
 
-      // Ensure user is verified (redundant check, but safe)
+      // Ensure user is verified (check metadata updated after potential auth flow)
       if (!metadata.is_verified) {
-           console.warn("[scheduleVisit] User is not verified. Cannot schedule visit.");
-           return { error: "Sorry, I can only schedule visits for verified users. Let me transfer you back.", destination_agent: "realEstate", silentTransfer: true };
+           console.warn("[scheduleVisit] User is not verified AFTER potential auth flow. Should not happen.");
+           // This case ideally shouldn't be reached if the flow is correct
+           return { error: "Verification still pending. Please complete verification first."};
       }
 
-      // Determine customer details: prioritize args, fallback to metadata
+      // Determine customer details: prioritize args, fallback to metadata (which should be updated now)
       const customer_name = nameFromArgs || metadata.customer_name;
       const phone_number = phoneFromArgs || metadata.phone_number;
 
       console.log("[scheduleVisit] Using details - Name:", customer_name, "Phone:", phone_number);
 
-      // Check if details are missing
+      // Check if details are STILL missing (should not happen after verification)
       if (!customer_name || !phone_number) {
-        console.log("[scheduleVisit] Missing customer name or phone number.");
-        return {
-          needDetails: true,
-          message: "To confirm the booking for [Selected Slot], please provide your full name and phone number.", // LLM asks this
-          // UI hint: display name/phone input fields
-        };
+        console.error("[scheduleVisit] Missing customer name or phone number AFTER verification flow.");
+        return { error: "Missing required customer details even after verification." };
       }
 
       // Check if property_id is missing
       if (!property_id) {
-          console.error("[scheduleVisit] Missing property ID (not in args or metadata).");
+          console.error("[scheduleVisit] Missing property ID (not in args or metadata). Cannot schedule.");
           return { error: "Cannot schedule visit without knowing the property." };
       }
 
@@ -260,30 +269,88 @@ const scheduleMeetingAgent: AgentConfig = {
               return { error: result?.error || "Failed to schedule the visit via the API." };
             }
 
-            console.log("[scheduleVisit] Schedule visit successful:", result);
+            console.log("[scheduleVisit] Schedule visit successful via API:", result);
 
-            // Update agent state
-            if (scheduleMeetingAgent.metadata) {
-                 scheduleMeetingAgent.metadata.has_scheduled = true;
-                 // Store confirmed details if they came from args
-                 if (nameFromArgs) scheduleMeetingAgent.metadata.customer_name = nameFromArgs;
-                 if (phoneFromArgs) scheduleMeetingAgent.metadata.phone_number = phoneFromArgs;
-            }
-
+            // Return structure indicating completion and transfer is needed
             return {
-              success: true,
-              message: `OK, I've scheduled your visit for ${visitDateTime}. The real estate agent will take over now.`, // Confirmation message
-              destination_agent: "realEstate",
-              silentTransfer: true, // Silent transfer back
-              has_scheduled: true // Pass back for metadata update on transfer
+              booking_confirmed: true, // Signal confirmation
+              confirmed_date: visitDateTime, // Pass back details for confirmation message
+              // Let the agent decide to call completeScheduling based on this tool's success
+              message: "Booking successful via API." // Internal message, agent will generate final confirmation
             };
 
         } catch (error: any) {
            console.error("[scheduleVisit] Exception calling schedule API:", error);
            return { error: `Failed to schedule visit due to an exception: ${error.message}` };
         }
+    },
+    requestAuthentication: async () => {
+      console.log("[scheduleMeeting.requestAuthentication] Transferring to authentication agent.");
+      return {
+        destination_agent: "authentication",
+        silentTransfer: true,
+        // Pass necessary context implicitly via metadata copy
+        came_from: 'scheduling' 
+      };
+    },
+    completeScheduling: async () => {
+      console.log("[scheduleMeeting.completeScheduling] Scheduling complete, transferring back to realEstate agent.");
+      return {
+        destination_agent: "realEstate",
+        silentTransfer: true,
+        // Pass updated has_scheduled flag implicitly via metadata copy
+        has_scheduled: true 
+      };
     }
   }
 };
+
+// Update getInstructions function (below scheduleMeetingAgent definition)
+const updatedInstructions = (metadata: AgentMetadata | undefined | null): string => {
+   const language = metadata?.language || "English";
+   const isVerified = metadata?.is_verified ?? false;
+   const customerName = metadata?.customer_name;
+   const phoneNumber = metadata?.phone_number;
+   const propertyIdForScheduling = (metadata as any)?.property_id_to_schedule;
+   const propertyName = (metadata as any)?.property_name || "the property"; // Get name if available
+ 
+   return `You are a helpful scheduling assistant for ${propertyName}. Your tone is friendly and efficient.
+ 
+ **VERY FIRST ACTION**: Your absolute FIRST task, BEFORE saying anything, is to call 'getAvailableSlots'.
+ 
+ STRICTLY FOLLOW THIS EXACT FLOW:
+ 1. CALL TOOL: Immediately call getAvailableSlots. Output ONLY the tool call.
+ 2. GREET & ASK DATE: After getAvailableSlots returns, THEN greet the user ("Hello! I'm the scheduling assistant for ${propertyName}.") and ask them to select a date: "Please select a date for your visit from the calendar below." The UI will display the calendar.
+ 3. WAIT FOR DATE: User selects a date from the UI.
+ 4. ASK TIME: Once date is selected (user will message like "Selected Tuesday, May 21"), ask for time: "Great. Please select a time: 11:00 AM or 4:00 PM." The UI will show time buttons.
+ 5. WAIT FOR TIME: User selects a time (user will message like "Selected 4:00 PM").
+ 6. CHECK VERIFICATION (using status from getAvailableSlots result):
+    - If user_verification_status was "verified":
+      * Confirm details: "Perfect! I have your details as ${customerName || '[Name not provided]'} and ${phoneNumber || '[Phone not provided]'}. To confirm your visit for ${propertyName} on [Selected Date] at [Selected Time], please reply 'Confirm'."
+      * Wait for user confirmation (e.g., "Confirm", "Yes").
+      * On confirmation, CALL TOOL: scheduleVisit.
+    - If user_verification_status was "unverified":
+      * CALL TOOL: requestAuthentication. DO NOT ask for name/phone yourself. Your turn ends.
+ 7. HANDLE scheduleVisit RESULT:
+    * If scheduleVisit tool succeeds (returns booking_confirmed: true):
+      * Confirm to user: "Great news, ${customerName || 'your visit'} for ${propertyName} on [Selected Date] at [Selected Time] is confirmed! You'll receive details shortly."
+      * CALL TOOL: completeScheduling. Your turn ends.
+    * If scheduleVisit tool fails:
+      * Inform user: "I encountered an issue scheduling your visit. Please try again later or contact support."
+      * CALL TOOL: completeScheduling (to return user to main agent). Your turn ends.
+ 
+ CRITICAL RULES:
+ - Step 1 (getAvailableSlots) MUST be your first output.
+ - Follow the flow exactly.
+ - Let the authentication agent handle name/phone collection if needed.
+ - End your turn immediately after calling requestAuthentication or completeScheduling.
+ 
+ LANGUAGE: Respond ONLY in ${language}.
+ `;
+ };
+ 
+ // Assign the updated instructions function
+ scheduleMeetingAgent.instructions = updatedInstructions(undefined); 
+ // We'll rely on session updates to refresh instructions with live metadata
 
 export default scheduleMeetingAgent; 

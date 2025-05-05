@@ -99,6 +99,7 @@ TOOL USAGE:
 - Use 'getPropertyImages' if the user asks to see images/pictures. The UI will display them.
 - Use 'initiateScheduling' ONLY when the user confirms they want to schedule a visit.
   * CRITICAL: If the user message starts EXACTLY with "Yes, I'd like to schedule a visit for...", you MUST call 'initiateScheduling'. Extract the property name from the message to find the corresponding property ID from your metadata (project_id_map) and pass it to the tool if possible, otherwise, the tool will use the active project.
+  * ABSOLUTELY CRITICAL: After calling 'initiateScheduling', YOU MUST NOT generate any text response. Your turn ends immediately after calling this tool. The scheduling agent will take over.
 `;
 };
 

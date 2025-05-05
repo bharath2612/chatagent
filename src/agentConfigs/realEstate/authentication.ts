@@ -10,27 +10,45 @@ const authentication: AgentConfig = {
     "The initial agent that greets and authenticates the user for real estate inquiries. It collects the user's name and phone number, then verifies it through OTP.",
   instructions: `
 # Authentication Instructions
-- You must immediately ask for the user's first name when the conversation is transferred to you. Do NOT wait for the user to say anything first.
-- Begin by saying: " Before we Proceed further May I have your name, please?"
-- After receiving the name, ask for the user's phone number in E.164 format (e.g., +1234567890).
-  - IMPORTANT: The phone number MUST start with a plus sign and country code (e.g., +1, +91)
-  - Valid examples: "+12345678901", "+911234567890", "+447123456789"
-  - Make sure to extract the EXACT phone number from the user's message, preserving the plus sign
-  - If a user responds with something like "My number is +1234567890", you MUST extract ONLY "+1234567890"
 
-- After receiving the phone number, you MUST:
-  1. Double-check that the phone number starts with "+" and contains only digits after that
-  2. Extract ONLY the phone number pattern (e.g., "+12345678901") from the user's message
-  3. Submit EXACTLY this extracted phone number using the submitPhoneNumber tool
-  4. DO NOT modify the phone number format in any way
+CONTEXT: You might be called from the main real estate agent OR from the scheduling agent.
 
-- Ask the user to provide the OTP they received.
-- Use the verifyOTP tool with the SAME phone number you saved earlier.
-- After successful authentication, automatically transfer the conversation back to the real estate agent.
+# FLOW 1: Called from Real Estate Agent (User needs initial verification)
+- If the user needs initial verification (typically the first time they interact or after 7 questions), you must immediately ask for the user's first name.
+- Say: "Before we proceed further, may I have your name, please?"
+- After receiving the name, ask for the user's phone number in E.164 format (e.g., +1234567890). Explain the format if necessary.
+- After receiving the phone number, call the submitPhoneNumber tool.
+- Then ask the user for the OTP: "Thank you. I've sent a verification code to your phone. Please enter the code when you receive it."
+- When the user provides the OTP, call the verifyOTP tool.
+- If verifyOTP succeeds:
+  * It will return destination_agent: "realEstate". DO NOT generate any text response yourself.
+  * The system will automatically transfer the user back to the real estate agent.
+- If verifyOTP fails:
+  * Inform the user: "Sorry, that code is incorrect. Please try again or request a new code."
+
+# FLOW 2: Called from Scheduling Agent (User needs verification DURING scheduling)
+- If the user is being verified during scheduling (transferred via requestAuthentication tool):
+  * Greet briefly: "Okay, let's get you verified to complete the booking."
+  * Immediately ask for BOTH name and phone number: "Please provide your full name and phone number."
+  * Wait for user to provide details.
+  * Call the submitPhoneNumber tool with the provided name and phone number.
+  * Ask for OTP: "Thank you. Please enter the verification code sent to your phone."
+  * Wait for user to provide OTP.
+  * Call the verifyOTP tool.
+  * If verifyOTP succeeds:
+    * It will return destination_agent: "scheduleMeeting". DO NOT generate any text response yourself.
+    * The system will automatically transfer the user back to the scheduling agent.
+  * If verifyOTP fails:
+    * Inform the user: "Sorry, that code is incorrect. Please try again."
+
+# GENERAL TOOL USAGE:
+- submitPhoneNumber: Use after getting name (Flow 1) or name & phone (Flow 2).
+- verifyOTP: Use after the user provides the OTP code.
+- transferToRealEstate: This tool is now DEPRECATED. The transfer happens automatically when verifyOTP succeeds and returns destination_agent: "realEstate". DO NOT CALL THIS TOOL.
+- transferToScheduleMeeting: This tool is now DEPRECATED. The transfer happens automatically when verifyOTP succeeds and returns destination_agent: "scheduleMeeting". DO NOT CALL THIS TOOL.
 
 # LANGUAGE INSTRUCTIONS
-- The conversation language is set to \${metadata?.language || "English"}. Respond in \${metadata?.language || "English"}.
-- If the user changes the language, update your responses accordingly.
+- The conversation language is set to \${metadata?.language || "English"}. Respond ONLY in \${metadata?.language || "English"}.
 `,
   tools: [
     {
@@ -194,6 +212,15 @@ const authentication: AgentConfig = {
 
         const data = await response.json();
         console.log("[submitPhoneNumber] PhoneAuth response:", data);
+
+        // Update metadata after successful submission
+        if (response.ok && data.success !== false) {
+            if (authentication.metadata) {
+                authentication.metadata.customer_name = name;
+                authentication.metadata.phone_number = phone_number;
+            }
+        }
+
         return { success: response.ok && data.success !== false, message: data.message || (response.ok ? "OTP Sent" : "Failed to send OTP") };
 
       } catch (error: any) {
@@ -278,18 +305,25 @@ const authentication: AgentConfig = {
 
         // If OTP verification is successful (server indicates success/verified)
         if (response.ok && (data.success || data.verified)) {
-          console.log("[verifyOTP] OTP verified successfully, preparing transfer to realEstate agent");
+          console.log("[verifyOTP] OTP verified successfully.");
+          
+          // Determine which agent to transfer back to based on metadata (if available)
+          // Default to realEstate if no specific context
+          const cameFromScheduling = (authentication.metadata as any)?.came_from === 'scheduling';
+          const destination = cameFromScheduling ? "scheduleMeeting" : "realEstate";
+          console.log(`[verifyOTP] Preparing transfer back to: ${destination}`);
 
-          // Return structure indicating agent transfer is needed
-          // The handleFunctionCall in useHandleServerEvent will catch destination_agent
-          // and copy metadata before calling setSelectedAgentName.
+          // Update metadata for the destination agent
+          const updatedMetadata = {
+            is_verified: true,
+            customer_name: data.customer_name || authentication.metadata?.customer_name || "", // Use name from response or previous metadata
+            phone_number: phone_number, // Pass the verified phone number
+          };
+
           return {
-              destination_agent: "realEstate", // Signal to transfer
-              // Pass verification details to be included in the new agent's metadata
-              is_verified: true,
-              customer_name: data.customer_name || "", // Get name from response if available
-              phone_number: phone_number, // Pass the verified phone number
-              message: "OTP verified successfully."
+              destination_agent: destination, // Signal to transfer
+              ...updatedMetadata, // Pass updated metadata fields
+              message: "OTP verified successfully." // Internal message
           };
         } else {
             // OTP verification failed
@@ -301,15 +335,9 @@ const authentication: AgentConfig = {
         return { error: `Failed to verify OTP: ${error.message}` };
       }
     },
-    // transferToRealEstate logic is now handled by the presence of `destination_agent`
-    // in the return value of verifyOTP and the `useHandleServerEvent` hook.
-    // The tool definition remains so the LLM knows it *can* transfer.
-    transferToRealEstate: async () => {
-         console.log("[authentication.transferToRealEstate] Tool called - this should be handled by destination_agent return value.");
-         // This function primarily exists for the LLM's tool schema.
-         // The actual transfer happens when verifyOTP returns destination_agent.
-         return { success: true, message: "Transfer initiated." };
-     }
+    // Remove transferToRealEstate and transferToScheduleMeeting tool logic - transfers are handled by verifyOTP
+    // transferToRealEstate: async () => { ... },
+    // transferToScheduleMeeting: async () => { ... }
   },
 };
 

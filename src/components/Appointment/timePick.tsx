@@ -1,9 +1,11 @@
 "use client"
 
-import React, { useState, useEffect } from "react"
+import React, { useState, useEffect, useCallback } from "react"
 import BookingConfirmation from "./BookingConfirmation"
 import AppointmentConfirmed from "./Confirmations"
 import { motion, AnimatePresence, Variants } from "framer-motion"
+import Calendar from 'react-calendar';
+import 'react-calendar/dist/Calendar.css'; // Import calendar CSS
 
 interface PropertyUnit {
   type: string
@@ -61,7 +63,7 @@ const childVariants: Variants = {
 }
 
 type Schedule = {
-  [day: string]: string[]
+  [day: string]: string[] // Format: "Weekday, Month Day" -> ["11:00 AM", "4:00 PM"]
 }
 
 interface TimePickProps {
@@ -72,67 +74,6 @@ interface TimePickProps {
   onVerificationSubmit?: (name: string, phone: string) => void
 }
 
-// Add UI components for verification
-const VerificationForm = ({ onSubmit }: { onSubmit?: (name: string, phone: string) => void }) => {
-  const [name, setName] = useState("");
-  const [phone, setPhone] = useState("");
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (onSubmit && name && phone) {
-      onSubmit(name, phone);
-    }
-  };
-
-  return (
-    <motion.div
-      variants={containerVariants}
-      initial="hidden"
-      animate="visible"
-      exit="exit"
-      className="p-4 bg-[#0b3d91] text-white rounded-xl"
-    >
-      <motion.h3 variants={childVariants} className="text-lg font-semibold mb-3">
-        Verification Required
-      </motion.h3>
-      <motion.p variants={childVariants} className="text-sm mb-4">
-        To confirm your booking, please provide your contact details:
-      </motion.p>
-      <form onSubmit={handleSubmit}>
-        <motion.div variants={childVariants} className="mb-3">
-          <label className="block text-sm mb-1">Full Name</label>
-          <input
-            type="text"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            className="w-full p-2 text-blue-900 rounded"
-            placeholder="Enter your full name"
-            required
-          />
-        </motion.div>
-        <motion.div variants={childVariants} className="mb-4">
-          <label className="block text-sm mb-1">Phone Number</label>
-          <input
-            type="tel"
-            value={phone}
-            onChange={(e) => setPhone(e.target.value)}
-            className="w-full p-2 text-blue-900 rounded"
-            placeholder="Enter your phone number"
-            required
-          />
-        </motion.div>
-        <motion.button
-          variants={childVariants}
-          type="submit"
-          className="w-full bg-blue-600 hover:bg-blue-700 p-2 rounded font-medium"
-        >
-          Verify & Book
-        </motion.button>
-      </form>
-    </motion.div>
-  );
-};
-
 export default function TimePick({ 
   schedule, 
   property,
@@ -140,28 +81,73 @@ export default function TimePick({
   showVerification = false,
   onVerificationSubmit
 }: TimePickProps) {
-  const [selectedDay, setSelectedDay] = useState<string>("");
+
+  // --- Helper Functions Inside Component ---
+  const getAvailableDates = useCallback((currentSchedule: Schedule): Date[] => {
+    return Object.keys(currentSchedule).map(dateStr => new Date(dateStr.split(', ')[1] + ", " + new Date().getFullYear()));
+  }, []);
+
+  const tileDisabled = useCallback(({ date, view }: { date: Date, view: string }): boolean => {
+    if (view === 'month') {
+      const availableDates = getAvailableDates(schedule); 
+      const dayOfWeek = date.getDay();
+      if (dayOfWeek === 0 || dayOfWeek === 6) return true;
+      return !availableDates.some(availableDate => 
+        availableDate.getFullYear() === date.getFullYear() &&
+        availableDate.getMonth() === date.getMonth() &&
+        availableDate.getDate() === date.getDate()
+      );
+    }
+    return false;
+  }, [schedule, getAvailableDates]);
+
+  const formatDateForSchedule = useCallback((date: Date): string => {
+    const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+    return `${days[date.getDay()]}, ${monthNames[date.getMonth()]} ${date.getDate()}`;
+  }, []);
+  
+  // --- Component State ---
+  const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [selectedTime, setSelectedTime] = useState<string | null>(null);
   const [showVerificationForm, setShowVerificationForm] = useState<boolean>(false);
   const [isConfirmed, setIsConfirmed] = useState<boolean>(false);
+  const [isLoading, setIsLoading] = useState(true);
 
+  // Update loading state and find first available date when schedule arrives
   useEffect(() => {
-    const days = Object.keys(schedule);
-    if (days.length > 0 && !selectedDay) {
-      setSelectedDay(days[0]);
+    if (Object.keys(schedule).length > 0) {
+      setIsLoading(false);
+      // Find the first available date in the schedule to pre-select
+      const firstAvailableDateStr = Object.keys(schedule)[0];
+      if (firstAvailableDateStr && !selectedDate) { // Only set if not already selected
+        const initialDate = new Date(firstAvailableDateStr.split(', ')[1] + ", " + new Date().getFullYear());
+        // Check if this initial date is valid before setting
+        if (!tileDisabled({ date: initialDate, view: 'month' })) {
+          setSelectedDate(initialDate);
+        }
+      }
+    } else {
+      setIsLoading(true);
+      setSelectedDate(null); // Clear date if schedule becomes empty
     }
-  }, [schedule, selectedDay]);
+  }, [schedule, selectedDate, tileDisabled]); // Added tileDisabled as dependency
 
-  // Modified handle time click to handle the new flow
+  // Handle date selection from calendar
+  const handleDateChange = (value: any) => {
+    if (value instanceof Date) {
+      setSelectedDate(value);
+      setSelectedTime(null); // Reset time when date changes
+    }
+  };
+
+  // Handle time button click
   const handleTimeClick = (time: string) => {
     setSelectedTime(time);
-    
-    // Call the parent callback if provided
-    if (onTimeSelect && selectedDay) {
-      onTimeSelect(selectedDay, time);
+    if (onTimeSelect && selectedDate) {
+      const formattedDate = formatDateForSchedule(selectedDate);
+      onTimeSelect(formattedDate, time);
     }
-    
-    // Show verification form if needed
     if (showVerification) {
       setShowVerificationForm(true);
     }
@@ -171,104 +157,115 @@ export default function TimePick({
   const handleVerificationSubmit = (name: string, phone: string) => {
     if (onVerificationSubmit) {
       onVerificationSubmit(name, phone);
-      setIsConfirmed(true);
+      setIsConfirmed(true); // Move to confirmation screen after submit
     }
   };
+  
+  // Get available times for the selected date
+  const availableTimes = selectedDate ? schedule[formatDateForSchedule(selectedDate)] || [] : [];
 
   return (
-    <div className="p-4 absolute top-36 bg-[#0b3d91] text-white rounded-xl space-y-4">
+    <div className="p-4 absolute top-36 bg-[#0b3d91] text-white rounded-xl space-y-4 w-[calc(100%-2rem)] mx-auto">
       <AnimatePresence mode="wait">
         {isConfirmed ? (
-          <motion.div
-            key="appointment-confirmed"
-            variants={containerVariants}
-            initial="hidden"
-            animate="visible"
-            exit="exit"
-          >
+          <motion.div key="appointment-confirmed" variants={containerVariants} initial="hidden" animate="visible" exit="exit">
             <AppointmentConfirmed 
               property={property} 
-              date={selectedDay}
+              date={selectedDate ? formatDateForSchedule(selectedDate) : ""}
               time={selectedTime || ""}
             />
           </motion.div>
-        ) : showVerificationForm ? (
-          <VerificationForm onSubmit={handleVerificationSubmit} />
-        ) : selectedTime ? (
-          <motion.div
-            key="booking-confirmation"
-            variants={containerVariants}
-            initial="hidden"
-            animate="visible"
-            exit="exit"
-          >
-            <BookingConfirmation
-              onClose={() => setSelectedTime(null)}
-              selectedTime={selectedTime}
-              selectedDay={selectedDay}
-              onConfirm={() => showVerification ? setShowVerificationForm(true) : setIsConfirmed(true)}
-              property={property}
-            />
-          </motion.div>
         ) : (
-          <motion.div
-            key="time-pick"
-            variants={containerVariants}
-            initial="hidden"
-            animate="visible"
-            exit="exit"
-          >
-            <motion.p variants={childVariants} className="text-lg ">
-              <em className="text-3xl font-sans">
-                Appointment time available for {property.name}
-              </em>
-              <select
-                className="rounded-lg mb-4 bg-transparent text-white font-semibold ml-2 text-2xl underline disabled:opacity-50"
-                value={selectedDay}
-                onChange={(e) => setSelectedDay(e.target.value)}
-                disabled={Object.keys(schedule).length === 0}
-              >
-                {Object.keys(schedule).length === 0 ? (
-                  <option className="bg-[#0b3d91] text-white text-2xl" value="">Loading...</option>
-                ) : (
-                  Object.keys(schedule).map((day) => (
-                    <option
-                      key={day}
-                      value={day}
-                      className="bg-[#0b3d91] text-white"
-                    >
-                      {day}
-                    </option>
-                  ))
-                )}
-              </select>
-            </motion.p>
-            <motion.div variants={childVariants} className="space-y-2">
-              {Object.keys(schedule).length === 0 ? (
-                <motion.p variants={childVariants} className="italic text-sm">
-                  Loading available times...
-                </motion.p>
-              ) : selectedDay && schedule[selectedDay] && schedule[selectedDay].length > 0 ? (
-                schedule[selectedDay].map((time, index) => (
-                  <motion.div
-                    key={index}
-                    variants={childVariants}
-                    className="flex justify-between items-center px-4 py-3 bg-[#1e4db7] rounded-full shadow-md cursor-pointer hover:bg-[#2a5dd8]"
-                    onClick={() => handleTimeClick(time)}
-                  >
-                    <span className="font-semibold">{selectedDay}</span>
-                    <span className="text-sm">{time}</span>
-                  </motion.div>
-                ))
-              ) : (
-                <motion.p variants={childVariants} className="italic text-sm">
-                  No time slots available for {selectedDay}
-                </motion.p>
-              )}
+          <motion.div key="time-pick-calendar" variants={containerVariants} initial="hidden" animate="visible" exit="exit" className="flex flex-col items-center">
+            <motion.h3 variants={childVariants} className="text-lg font-semibold mb-2 text-center">
+              Select a Date & Time for {property.name}
+            </motion.h3>
+            
+            <motion.div variants={childVariants} className="mb-4 w-full calendar-container">
+              <Calendar
+                onChange={handleDateChange}
+                value={selectedDate}
+                minDate={new Date()}
+                tileDisabled={tileDisabled}
+                className="bg-blue-800 border-none rounded-lg text-white"
+              />
             </motion.div>
+
+            {selectedDate && !isLoading && (
+              <motion.div variants={childVariants} className="w-full flex justify-center space-x-4">
+                {availableTimes.length > 0 ? (
+                  availableTimes.map((time) => (
+                    <button
+                      key={time}
+                      onClick={() => handleTimeClick(time)}
+                      className={`px-4 py-2 rounded-lg font-medium transition-colors 
+                        ${selectedTime === time ? 'bg-white text-blue-900' : 'bg-blue-600 hover:bg-blue-700'}`}
+                    >
+                      {time}
+                    </button>
+                  ))
+                ) : (
+                  <p className="text-sm italic opacity-75">No slots available for this date.</p>
+                )}
+              </motion.div>
+            )}
+            
+            {isLoading && (
+               <p className="text-sm italic opacity-75 mt-4">Loading available dates...</p>
+            )}
+
           </motion.div>
         )}
       </AnimatePresence>
+      {/* Add some basic styling for the calendar */}
+      <style jsx global>{`
+        .calendar-container .react-calendar {
+          border: none;
+          background-color: transparent;
+          font-family: inherit;
+          width: 100%;
+        }
+        .calendar-container .react-calendar__navigation button {
+          color: white;
+          min-width: 34px;
+          background: none;
+          font-size: 1rem;
+        }
+        .calendar-container .react-calendar__navigation button:enabled:hover,
+        .calendar-container .react-calendar__navigation button:enabled:focus {
+          background-color: #1e4db7; /* Slightly lighter blue */
+        }
+        .calendar-container .react-calendar__month-view__weekdays__weekday abbr {
+          text-decoration: none;
+          font-weight: normal;
+          color: #a0aec0; /* Lighter gray */
+        }
+        .calendar-container .react-calendar__tile {
+          color: white;
+          background: none;
+          border-radius: 4px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          height: 36px; 
+        }
+        .calendar-container .react-calendar__tile:enabled:hover,
+        .calendar-container .react-calendar__tile:enabled:focus {
+          background-color: #1e4db7;
+        }
+        .calendar-container .react-calendar__tile--now {
+          background: #2a5dd8; /* Highlight current day */
+        }
+        .calendar-container .react-calendar__tile--active {
+          background: #4a90e2; /* Highlight selected day */
+          color: white;
+        }
+         .calendar-container .react-calendar__tile--disabled {
+          background-color: transparent;
+          color: #4a5568; /* Darker gray for disabled */
+          cursor: not-allowed;
+        }
+      `}</style>
     </div>
   )
 }

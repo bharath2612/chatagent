@@ -14,6 +14,7 @@ import { VoiceWaveform } from "./VoiceWaveForm"
 import TimePick from "../Appointment/timePick";
 import Confirmations from "../Appointment/Confirmations"; 
 import BookingConfirmation from "../Appointment/BookingConfirmation";
+import VerificationForm from "../Appointment/VerificationForm"; // Corrected path
 
 // Agent Logic Imports
 import { 
@@ -127,6 +128,9 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
     date: '',
     time: ''
   });
+
+  // Add state to specifically track if verification is *currently* needed (distinct from showVerificationScreen)
+  const [isVerifying, setIsVerifying] = useState<boolean>(false);
 
   // Helper to generate safe IDs (32 chars max)
   const generateSafeId = () => uuidv4().replace(/-/g, '').slice(0, 32);
@@ -1187,32 +1191,30 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
 
   // Add useEffect to monitor agent changes and display the scheduling UI
   useEffect(() => {
-    // Check if we've switched to the scheduling agent
-    if (selectedAgentName === "scheduleMeeting") {
-      console.log("[Agent Change] Detected switch to scheduleMeeting agent - showing scheduling UI");
-      
-      // If we have a selected property, show the time slots UI immediately
-      // The agent will fetch the actual slots via getAvailableSlots
+    if (selectedAgentName === "authentication") {
+      console.log("[Agent Change] Detected switch to authentication agent.");
+      setIsVerifying(true); // Show verification UI elements
+      setShowTimeSlots(false); // Hide scheduling UI
+      // No need to trigger response, auth agent instructions handle it
+    } else if (selectedAgentName === "scheduleMeeting") {
+      console.log("[Agent Change] Detected switch to scheduleMeeting agent.");
+      setIsVerifying(false); // Hide verification UI if switching *to* scheduling
+      // Existing logic to show time slots
       if (selectedProperty) {
-        console.log("[Agent Change] Have selected property, showing time slots UI container");
-        // Ensure the UI container is shown, but don't pre-fill with loading data
         setShowTimeSlots(true);
-        // Clear previous slots if any
         setAvailableSlots({}); 
       } else {
-        console.log("[Agent Change] No selected property yet, waiting for agent to get slots");
-        // Agent will fetch slots, which will then trigger showing the UI
-        setShowTimeSlots(false); // Hide until slots are received
+        setShowTimeSlots(false);
         setAvailableSlots({}); 
       }
-    } else if (selectedAgentName === "realEstate" && showTimeSlots) {
-      // If we switched back to realEstate agent and time slots were showing,
-      // this means a booking was completed or cancelled
-      console.log("[Agent Change] Back to realEstate agent, hiding scheduling UI");
-      setShowTimeSlots(false);
-      setAvailableSlots({}); // Clear slots
+    } else if (selectedAgentName === "realEstate") {
+      console.log("[Agent Change] Switched back to realEstate agent.");
+      setIsVerifying(false); // Hide verification UI
+      setShowTimeSlots(false); // Hide scheduling UI
+      setAvailableSlots({}); 
     }
-  }, [selectedAgentName, selectedProperty]); // Removed availableSlots dependency to prevent loops
+    // Reset setup flag if agent changes (handled in separate effect)
+  }, [selectedAgentName, selectedProperty]);
 
   // --- UI Handlers --- 
   const toggleInput = () => {
@@ -1309,122 +1311,47 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
     setSelectedDay(date);
     setSelectedTime(time);
     
-    // If user needs verification, show verification screen
-    if (showVerificationScreen) {
-      console.log("[UI] User needs verification, showing verification screen");
-      
-      // Update verification data with selected date and time
-      setVerificationData(prev => ({
-        ...prev,
-        date,
-        time
-      }));
-      
-      // Trigger a user message about the selection
-      const userMessageId = generateSafeId();
-      const selectionMessage = `I'd like to book a visit on ${date} at ${time}.`;
-      
-      // Add message to transcript
-      addTranscriptMessage(userMessageId, 'user', selectionMessage);
-      
-      // Send to agent
-      sendClientEvent(
-        {
-          type: "conversation.item.create",
-          item: {
-            id: userMessageId,
-            type: "message",
-            role: "user", 
-            content: [{ type: "input_text", text: selectionMessage }]
-          }
-        },
-        "(time slot selection)"
-      );
-      sendClientEvent({ type: "response.create" }, "(trigger response after slot selection)");
-    } else {
-      // User is already verified, just confirm the booking
-      const userMessageId = generateSafeId();
-      const selectionMessage = `I'd like to book a visit on ${date} at ${time}.`;
-      
-      // Add message to transcript
-      addTranscriptMessage(userMessageId, 'user', selectionMessage);
-      
-      // Send to agent
-      sendClientEvent(
-        {
-          type: "conversation.item.create",
-          item: {
-            id: userMessageId,
-            type: "message",
-            role: "user",
-            content: [{ type: "input_text", text: selectionMessage }]
-          }
-        },
-        "(time slot selection - verified user)"
-      );
-      sendClientEvent({ type: "response.create" }, "(trigger response after slot selection)");
-    }
-  }, [showVerificationScreen, sendClientEvent, addTranscriptMessage, generateSafeId]);
+    // Send the selection message to the agent. The agent will decide if verification is needed.
+    const userMessageId = generateSafeId();
+    const selectionMessage = `Selected ${date} at ${time}.`; // Simpler message
+    
+    addTranscriptMessage(userMessageId, 'user', selectionMessage);
+    
+    sendClientEvent(
+      {
+        type: "conversation.item.create",
+        item: {
+          id: userMessageId, type: "message", role: "user", 
+          content: [{ type: "input_text", text: selectionMessage }]
+        }
+      },
+      "(time slot selection)"
+    );
+    sendClientEvent({ type: "response.create" }, "(trigger response after slot selection)");
+
+  }, [sendClientEvent, addTranscriptMessage, generateSafeId]);
 
   // Add verification submission handler
   const handleVerificationSubmit = useCallback((name: string, phone: string) => {
     console.log(`[UI] User submitted verification data: name=${name}, phone=${phone}`);
     
-    // Update verification data
-    setVerificationData(prev => ({
-      ...prev,
-      name,
-      phone
-    }));
-    
     // Simulate user sending contact details
     const userMessageId = generateSafeId();
     const detailsMessage = `My name is ${name} and my phone number is ${phone}.`;
-    
-    // Add message to transcript
     addTranscriptMessage(userMessageId, 'user', detailsMessage);
     
-    // Send to agent
     sendClientEvent(
       {
         type: "conversation.item.create", 
-        item: {
-          id: userMessageId,
-          type: "message",
-          role: "user",
-          content: [{ type: "input_text", text: detailsMessage }]
-        }
+        item: { id: userMessageId, type: "message", role: "user", content: [{ type: "input_text", text: detailsMessage }] }
       },
       "(user verification details)"
     );
     sendClientEvent({ type: "response.create" }, "(trigger response after details)");
-    
-    // After a short delay, simulate code verification
-    setTimeout(() => {
-      const verificationMessageId = generateSafeId();
-      const verificationMessage = "The code I received is 123456.";
-      
-      // Add message to transcript
-      addTranscriptMessage(verificationMessageId, 'user', verificationMessage);
-      
-      // Send to agent
-      sendClientEvent(
-        {
-          type: "conversation.item.create",
-          item: {
-            id: verificationMessageId,
-            type: "message", 
-            role: "user",
-            content: [{ type: "input_text", text: verificationMessage }]
-          }
-        },
-        "(verification code entry)"
-      );
-      sendClientEvent({ type: "response.create" }, "(trigger response after code)");
-      
-      // Hide verification screen, the agent will handle the rest
-      setShowVerificationScreen(false);
-    }, 3000);
+
+    // Hide the form immediately after submission
+    setIsVerifying(false); 
+
   }, [sendClientEvent, addTranscriptMessage, generateSafeId]);
 
   return (
@@ -1592,22 +1519,31 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
           )}
 
           {/* --- Main Content Area --- */}
-          <div className={`flex-1 overflow-y-auto p-4 scrollbar-thin scrollbar-thumb-blue-700 scrollbar-track-blue-800 ${!propertyListData && !selectedPropertyDetails && transcriptItems.length === 0 ? 'flex items-center justify-center' : 'space-y-4'}`}>
-            {/* Show TimePick component when scheduling flow is active */}
-            {showTimeSlots && selectedProperty && (
+          <div className={`flex-1 overflow-y-auto p-4 scrollbar-thin scrollbar-thumb-blue-700 scrollbar-track-blue-800 ${!propertyListData && !selectedPropertyDetails && transcriptItems.length === 0 && !isVerifying ? 'flex items-center justify-center' : 'space-y-4'}`}>
+            {/* Show Verification Form if currently verifying */}
+            {isVerifying && (
+              <div className="relative w-full">
+                 {/* We need a dedicated verification component here */}
+                 {/* Let's reuse the one from TimePick for now, but ideally it's separate */}
+                 <VerificationForm onSubmit={handleVerificationSubmit} /> 
+              </div>
+            )}
+
+            {/* Show TimePick component ONLY if scheduling AND NOT verifying */}
+            {showTimeSlots && selectedProperty && !isVerifying && (
               <div className="relative w-full">
                 <TimePick
                   schedule={availableSlots}
                   property={selectedProperty}
-                  onTimeSelect={handleTimeSlotSelection}
-                  showVerification={showVerificationScreen}
-                  onVerificationSubmit={handleVerificationSubmit}
+                  onTimeSelect={handleTimeSlotSelection} // Pass the callback
+                  // showVerification prop is no longer needed here
+                  // onVerificationSubmit is handled by the separate VerificationForm render
                 />
               </div>
             )}
             
-            {/* Show Property List Cards (only if not in scheduling mode) */}
-            {propertyListData && !selectedPropertyDetails && !showTimeSlots && (
+            {/* Show Property List Cards (only if not scheduling/verifying) */ }
+            {propertyListData && !selectedPropertyDetails && !showTimeSlots && !isVerifying && (
               <PropertyList 
                 properties={propertyListData}
                 onScheduleVisit={handleScheduleVisit}
@@ -1615,8 +1551,8 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
               />
             )}
             
-            {/* Show Agent's Text Message ONLY IF no property list or scheduling is shown */}
-            {lastAgentTextMessage && !propertyListData && !selectedPropertyDetails && !showTimeSlots && (
+            {/* Show Agent's Text Message (only if nothing else is shown) */}
+            {lastAgentTextMessage && !propertyListData && !selectedPropertyDetails && !showTimeSlots && !isVerifying && (
               <div className="w-full mb-4">
                 <p className="text-white text-xl font-medium italic">
                   {lastAgentTextMessage}
@@ -1624,8 +1560,8 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
               </div>
             )}
             
-            {/* Show only User Message if no agent text/cards/scheduling */}
-            {!lastAgentTextMessage && !propertyListData && !selectedPropertyDetails && !showTimeSlots && transcriptItems.length > 0 && transcriptItems.filter(item => item.type === 'MESSAGE' && item.role === 'user').length > 0 && (
+            {/* Show User Message (only if nothing else is shown) */ }
+            {!lastAgentTextMessage && !propertyListData && !selectedPropertyDetails && !showTimeSlots && !isVerifying && transcriptItems.length > 0 && transcriptItems.filter(item => item.type === 'MESSAGE' && item.role === 'user').length > 0 && (
               <>
               {transcriptItems
                 .filter(item => item.type === 'MESSAGE' && item.role === 'user')
