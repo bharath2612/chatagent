@@ -405,8 +405,17 @@ CONTEXT: You might be called from the main real estate agent OR from the schedul
       
       // Fix for session_id - prioritize metadata value if available
       let final_session_id = session_id;
-      if (session_id.startsWith('session_') || !session_id.match(/^[a-zA-Z0-9-_]+$/)) {
-        if (authentication.metadata?.session_id) {
+      // Improved validation to detect dummy/test session IDs
+      const isValidUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(session_id) || 
+                          /^[0-9a-f]{32}$/i.test(session_id);
+      const isSimpleDummyId = session_id.startsWith('session_') || 
+                              session_id.includes('123') ||
+                              session_id.length < 16 ||
+                              !session_id.match(/^[a-zA-Z0-9-_]+$/);
+                              
+      // Always prioritize stored metadata session_id if available
+      if (!isValidUUID || isSimpleDummyId) {
+        if (authentication.metadata?.session_id && authentication.metadata.session_id.length > 16) {
           final_session_id = authentication.metadata.session_id;
           console.log(`[verifyOTP] Using session_id from metadata: ${final_session_id}`);
         } else {
@@ -419,17 +428,23 @@ CONTEXT: You might be called from the main real estate agent OR from the schedul
             authentication.metadata.session_id = final_session_id;
           }
         }
+      } else {
+        console.log(`[verifyOTP] Using provided session_id which appears valid: ${final_session_id}`);
       }
 
       // Final validation to ensure we're not sending any dummy values to the API
-      if (final_session_id.startsWith('session_')) {
-        // Generate a guaranteed valid session ID
-        final_session_id = Date.now().toString(36) + Math.random().toString(36).substring(2, 10);
-        console.log(`[verifyOTP] Replaced dummy session_id with generated ID: ${final_session_id}`);
-        
-        // Store this in metadata
-        if (authentication.metadata) {
-          authentication.metadata.session_id = final_session_id;
+      if (final_session_id.startsWith('session_') || final_session_id.includes('123')) {
+        // If we STILL have a dummy session ID, force use metadata or generate a guaranteed valid one
+        if (authentication.metadata?.session_id && authentication.metadata.session_id.length > 16) {
+          final_session_id = authentication.metadata.session_id;
+          console.log(`[verifyOTP] Final check: Using metadata session_id: ${final_session_id}`);
+        } else {
+          final_session_id = Date.now().toString(36) + Math.random().toString(36).substring(2, 15);
+          console.log(`[verifyOTP] Final check: Replaced dummy session_id with generated ID: ${final_session_id}`);
+          
+          if (authentication.metadata) {
+            authentication.metadata.session_id = final_session_id;
+          }
         }
       }
 

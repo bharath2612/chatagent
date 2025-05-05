@@ -15,6 +15,7 @@ import TimePick from "../Appointment/timePick";
 import Confirmations from "../Appointment/Confirmations"; 
 import BookingConfirmation from "../Appointment/BookingConfirmation";
 import VerificationForm from "../Appointment/VerificationForm"; // Corrected path
+import OTPInput from "../Appointment/otp"; // Import OTP component
 
 // Agent Logic Imports
 import { 
@@ -122,6 +123,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
 
   // Add state for verification UI
   const [showVerificationScreen, setShowVerificationScreen] = useState<boolean>(false);
+  const [showOtpScreen, setShowOtpScreen] = useState<boolean>(false);
   const [verificationData, setVerificationData] = useState<{name: string, phone: string, date: string, time: string}>({
     name: '',
     phone: '',
@@ -1195,10 +1197,11 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       console.log("[Agent Change] Detected switch to authentication agent.");
       setIsVerifying(true); // Show verification UI elements
       setShowTimeSlots(false); // Hide scheduling UI
-      // No need to trigger response, auth agent instructions handle it
+      // Do not reset OTP screen here as we want it to show after verification
     } else if (selectedAgentName === "scheduleMeeting") {
       console.log("[Agent Change] Detected switch to scheduleMeeting agent.");
       setIsVerifying(false); // Hide verification UI if switching *to* scheduling
+      setShowOtpScreen(false); // Hide OTP screen when switching away from authentication
       // Existing logic to show time slots
       if (selectedProperty) {
         setShowTimeSlots(true);
@@ -1210,6 +1213,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
     } else if (selectedAgentName === "realEstate") {
       console.log("[Agent Change] Switched back to realEstate agent.");
       setIsVerifying(false); // Hide verification UI
+      setShowOtpScreen(false); // Hide OTP screen
       setShowTimeSlots(false); // Hide scheduling UI
       setAvailableSlots({}); 
     }
@@ -1378,6 +1382,13 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
   const handleVerificationSubmit = useCallback((name: string, phone: string) => {
     console.log(`[UI] User submitted verification data: name=${name}, phone=${phone}`);
     
+    // Store the verification data
+    setVerificationData(prev => ({
+      ...prev,
+      name,
+      phone
+    }));
+    
     // Simulate user sending contact details
     const userMessageId = generateSafeId();
     const detailsMessage = `My name is ${name} and my phone number is ${phone}.`;
@@ -1392,9 +1403,33 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
     );
     sendClientEvent({ type: "response.create" }, "(trigger response after details)");
 
-    // Hide the form immediately after submission
-    setIsVerifying(false); 
+    // Hide the verification form and show the OTP screen
+    setIsVerifying(false);
+    setShowOtpScreen(true);
 
+  }, [sendClientEvent, addTranscriptMessage, generateSafeId]);
+
+  // Add OTP submission handler
+  const handleOtpSubmit = useCallback((otp: string) => {
+    console.log(`[UI] User submitted OTP: ${otp}`);
+    
+    // Simulate user sending OTP
+    const userMessageId = generateSafeId();
+    const otpMessage = `My verification code is ${otp}.`;
+    addTranscriptMessage(userMessageId, 'user', otpMessage);
+    
+    sendClientEvent(
+      {
+        type: "conversation.item.create", 
+        item: { id: userMessageId, type: "message", role: "user", content: [{ type: "input_text", text: otpMessage }] }
+      },
+      "(user OTP submission)"
+    );
+    sendClientEvent({ type: "response.create" }, "(trigger response after OTP)");
+
+    // Hide the OTP screen
+    setShowOtpScreen(false);
+    
   }, [sendClientEvent, addTranscriptMessage, generateSafeId]);
 
   return (
@@ -1572,6 +1607,19 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
               </div>
             )}
 
+            {/* Show OTP screen after verification */}
+            {showOtpScreen && (
+              <div className="relative w-full flex justify-center items-center py-4">
+                <div className="w-full max-w-xs">
+                  <h3 className="text-lg font-medium text-center mb-4">Enter the verification code</h3>
+                  <p className="text-sm text-center mb-6">
+                    We've sent a 6-digit code to {verificationData.phone}
+                  </p>
+                  <OTPInput onSubmit={handleOtpSubmit} />
+                </div>
+              </div>
+            )}
+            
             {/* Show TimePick component ONLY if scheduling AND NOT verifying */}
             {showTimeSlots && selectedProperty && !isVerifying && (
               <div className="relative w-full">
