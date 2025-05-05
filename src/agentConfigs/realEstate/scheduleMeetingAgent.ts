@@ -22,9 +22,9 @@ const getScheduleMeetingInstructions = (metadata: AgentMetadata | undefined | nu
 STRICTLY FOLLOW THIS EXACT FLOW:
 1. CALL TOOL: Immediately call getAvailableSlots. Output ONLY the tool call.
 2. GREET & ASK DATE: After getAvailableSlots returns, THEN greet the user ("Hello! I'm here to help you schedule a visit to ${propertyName}.") and ask them to select a date: "Please select a date for your visit from the calendar below." The UI will display the calendar.
-3. WAIT FOR DATE: User selects a date from the UI.
-4. ASK TIME: Once date is selected (user will message like "Selected Tuesday, May 21"), ask for time: "Great. Please select a time from the available options." The UI will show time buttons.
-5. WAIT FOR TIME: User selects a time (user will message like "Selected 4:00 PM").
+3. WAIT FOR DATE: User selects a date from the UI. You'll receive a message like "Selected Monday, June 3."
+4. ASK TIME: When you receive a date-only message (e.g., "Selected Monday, June 3."), IMMEDIATELY respond with: "Great! Now please select a preferred time for your visit." The UI will show time buttons.
+5. WAIT FOR TIME: User selects a time. You'll receive a message like "Selected Monday, June 3 at 4:00 PM."
 6. CHECK VERIFICATION (using status from getAvailableSlots result):
    - If user_verification_status was "verified":
      * Confirm details: "Perfect! I have your details as ${customerName || '[Name not provided]'} and ${phoneNumber || '[Phone not provided]'}. To confirm your visit for ${propertyName} on [Selected Date] at [Selected Time], please reply 'Confirm'."
@@ -44,6 +44,8 @@ STRICTLY FOLLOW THIS EXACT FLOW:
 CRITICAL RULES:
 - Step 1 (getAvailableSlots) MUST be your first output.
 - Follow the flow exactly.
+- IMPORTANT: The date selection and time selection are TWO SEPARATE STEPS. Respond after each step.
+- You MUST respond to date-only selections ("Selected Monday, June 3") by asking to select a time.
 - Let the authentication agent handle name/phone collection if needed.
 - End your turn immediately after calling requestAuthentication or completeScheduling.
 - NEVER mention "transferring" to another agent or that another agent will handle verification.
@@ -341,9 +343,9 @@ const updatedInstructions = (metadata: AgentMetadata | undefined | null): string
  STRICTLY FOLLOW THIS EXACT FLOW:
  1. CALL TOOL: Immediately call getAvailableSlots. Output ONLY the tool call.
  2. GREET & ASK DATE: After getAvailableSlots returns, THEN greet the user ("Hello! I'm here to help you schedule a visit to ${propertyName}.") and ask them to select a date: "Please select a date for your visit from the calendar below." The UI will display the calendar.
- 3. WAIT FOR DATE: User selects a date from the UI.
- 4. ASK TIME: Once date is selected (user will message like "Selected Tuesday, May 21"), ask for time: "Great. Please select a time from the available options." The UI will show time buttons.
- 5. WAIT FOR TIME: User selects a time (user will message like "Selected 4:00 PM").
+ 3. WAIT FOR DATE: User selects a date from the UI. You'll receive a message like "Selected Monday, June 3."
+ 4. ASK TIME: When you receive a date-only message (e.g., "Selected Monday, June 3."), IMMEDIATELY respond with: "Great! Now please select a preferred time for your visit." The UI will show time buttons.
+ 5. WAIT FOR TIME: User selects a time. You'll receive a message like "Selected Monday, June 3 at 4:00 PM."
  6. CHECK VERIFICATION (using status from getAvailableSlots result):
     - If user_verification_status was "verified":
       * Confirm details: "Perfect! I have your details as ${customerName || '[Name not provided]'} and ${phoneNumber || '[Phone not provided]'}. To confirm your visit for ${propertyName} on [Selected Date] at [Selected Time], please reply 'Confirm'."
@@ -363,6 +365,8 @@ const updatedInstructions = (metadata: AgentMetadata | undefined | null): string
  CRITICAL RULES:
  - Step 1 (getAvailableSlots) MUST be your first output.
  - Follow the flow exactly.
+ - IMPORTANT: The date selection and time selection are TWO SEPARATE STEPS. Respond after each step.
+ - You MUST respond to date-only selections ("Selected Monday, June 3") by asking to select a time.
  - Let the authentication agent handle name/phone collection if needed.
  - End your turn immediately after calling requestAuthentication or completeScheduling.
  - NEVER mention "transferring" to another agent or that another agent will handle verification.

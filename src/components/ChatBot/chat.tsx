@@ -1305,29 +1305,43 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
 
   // Add handleTimeSlotSelection function to handle slot selection
   const handleTimeSlotSelection = useCallback((date: string, time: string) => {
-    console.log(`[UI] User selected time slot: ${date} at ${time}`);
+    console.log(`[UI] User selected time slot: date=${date}, time=${time || 'none'}`);
     
     // Stop any current response/audio first to avoid errors
     stopCurrentResponse(sendClientEvent);
     
-    // Store the selected date and time in local state
+    // Store the selected date in state (always), and time only if provided
     setSelectedDay(date);
-    setSelectedTime(time);
+    if (time) {
+      setSelectedTime(time);
+    }
     
     // First, find the current agent (should be scheduleMeeting)
     const schedulingAgent = selectedAgentConfigSet?.find(a => a.name === "scheduleMeeting");
     if (schedulingAgent && schedulingAgent.metadata) {
       // Save the selected date and time in agent metadata
       (schedulingAgent.metadata as any).selectedDate = date;
-      (schedulingAgent.metadata as any).selectedTime = time;
-      console.log(`[UI] Saved date ${date} and time ${time} to agent metadata`);
+      
+      // Only set selectedTime in metadata if actually provided
+      if (time) {
+        (schedulingAgent.metadata as any).selectedTime = time;
+        console.log(`[UI] Saved date ${date} and time ${time} to agent metadata`);
+      } else {
+        console.log(`[UI] Saved only date ${date} to agent metadata (no time yet)`);
+      }
     }
     
     // Add a small delay before sending the selection message to avoid race conditions
     setTimeout(() => {
-      // Send the selection message to the agent. The agent will decide if verification is needed.
+      // Create different messages based on whether this is a date-only selection or date+time
       const userMessageId = generateSafeId();
-      const selectionMessage = `Selected ${date} at ${time}.`; // Simpler message
+      let selectionMessage;
+      
+      if (time) {
+        selectionMessage = `Selected ${date} at ${time}.`; // Full date and time selection
+      } else {
+        selectionMessage = `Selected ${date}.`; // Date-only selection
+      }
       
       addTranscriptMessage(userMessageId, 'user', selectionMessage);
       
@@ -1339,13 +1353,13 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
             content: [{ type: "input_text", text: selectionMessage }]
           }
         },
-        "(time slot selection)"
+        time ? "(time slot selection)" : "(date selection only)"
       );
       
       // Small delay before creating a response
       setTimeout(() => {
         if (canCreateResponse()) {
-          sendClientEvent({ type: "response.create" }, "(trigger response after slot selection)");
+          sendClientEvent({ type: "response.create" }, "(trigger response after selection)");
         } else {
           console.log("[UI] Cannot create response - active response or agent transfer in progress");
           sendClientEvent({ type: "response.cancel" });

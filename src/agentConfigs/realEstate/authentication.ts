@@ -211,12 +211,46 @@ CONTEXT: You might be called from the main real estate agent OR from the schedul
       
       // Fix for session_id - prioritize metadata value if available
       let final_session_id = session_id;
-      if (session_id.startsWith('session_') || !session_id.match(/^[a-zA-Z0-9]+$/)) {
-        if (authentication.metadata?.session_id) {
+      // Improved validation to detect dummy/test session IDs
+      const isValidUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(session_id) || 
+                          /^[0-9a-f]{32}$/i.test(session_id);
+      const isSimpleDummyId = session_id.startsWith('session_') || 
+                              session_id.includes('123') ||
+                              session_id.length < 16 ||
+                              !session_id.match(/^[a-zA-Z0-9-_]+$/);
+                              
+      // Always prioritize stored metadata session_id if available
+      if (!isValidUUID || isSimpleDummyId) {
+        if (authentication.metadata?.session_id && authentication.metadata.session_id.length > 16) {
           final_session_id = authentication.metadata.session_id;
           console.log(`[submitPhoneNumber] Using session_id from metadata: ${final_session_id}`);
         } else {
-          console.warn("[submitPhoneNumber] Session ID looks like a dummy value, but no metadata fallback available");
+          // Generate a new session ID if needed - this is better than using a dummy value
+          final_session_id = Date.now().toString(36) + Math.random().toString(36).substring(2, 10);
+          console.log(`[submitPhoneNumber] Generated new session_id: ${final_session_id}`);
+          
+          // Store this new session ID in metadata for future use
+          if (authentication.metadata) {
+            authentication.metadata.session_id = final_session_id;
+          }
+        }
+      } else {
+        console.log(`[submitPhoneNumber] Using provided session_id which appears valid: ${final_session_id}`);
+      }
+
+      // Final validation to ensure we're not sending any dummy values to the API
+      if (final_session_id.startsWith('session_') || final_session_id.includes('123')) {
+        // If we STILL have a dummy session ID, force use metadata or generate a guaranteed valid one
+        if (authentication.metadata?.session_id && authentication.metadata.session_id.length > 16) {
+          final_session_id = authentication.metadata.session_id;
+          console.log(`[submitPhoneNumber] Final check: Using metadata session_id: ${final_session_id}`);
+        } else {
+          final_session_id = Date.now().toString(36) + Math.random().toString(36).substring(2, 15);
+          console.log(`[submitPhoneNumber] Final check: Replaced dummy session_id with generated ID: ${final_session_id}`);
+          
+          if (authentication.metadata) {
+            authentication.metadata.session_id = final_session_id;
+          }
         }
       }
 
@@ -227,6 +261,15 @@ CONTEXT: You might be called from the main real estate agent OR from the schedul
       }
 
       console.log("[submitPhoneNumber] Making request with: org_id:", final_org_id, "chatbot_id:", final_chatbot_id, "session_id:", final_session_id);
+
+      // Enhanced logging of the final values after all validations
+      console.log("[submitPhoneNumber] FINAL VALIDATED VALUES:", {
+        session_id: final_session_id,
+        org_id: final_org_id,
+        chatbot_id: final_chatbot_id,
+        phone_number: phone_number,
+        name: name
+      });
 
       const requestBody = {
         session_id: final_session_id,
@@ -241,6 +284,9 @@ CONTEXT: You might be called from the main real estate agent OR from the schedul
       try {
         // Ensure Supabase URL is in environment variables or config
         const supabaseFuncUrl = process.env.NEXT_PUBLIC_SUPABASE_FUNC_URL || "https://dsakezvdiwmoobugchgu.supabase.co/functions/v1/phoneAuth";
+        console.log(`[submitPhoneNumber] Using phoneAuth URL: ${supabaseFuncUrl}`);
+        console.log(`[submitPhoneNumber] Request body: ${JSON.stringify(requestBody)}`);
+        
         const response = await fetch(
           supabaseFuncUrl,
           {
@@ -359,12 +405,31 @@ CONTEXT: You might be called from the main real estate agent OR from the schedul
       
       // Fix for session_id - prioritize metadata value if available
       let final_session_id = session_id;
-      if (session_id.startsWith('session_') || !session_id.match(/^[a-zA-Z0-9]+$/)) {
+      if (session_id.startsWith('session_') || !session_id.match(/^[a-zA-Z0-9-_]+$/)) {
         if (authentication.metadata?.session_id) {
           final_session_id = authentication.metadata.session_id;
           console.log(`[verifyOTP] Using session_id from metadata: ${final_session_id}`);
         } else {
-          console.warn("[verifyOTP] Session ID looks like a dummy value, but no metadata fallback available");
+          // Generate a new session ID if needed - this is better than using a dummy value
+          final_session_id = Date.now().toString(36) + Math.random().toString(36).substring(2, 10);
+          console.log(`[verifyOTP] Generated new session_id: ${final_session_id}`);
+          
+          // Store this new session ID in metadata for future use
+          if (authentication.metadata) {
+            authentication.metadata.session_id = final_session_id;
+          }
+        }
+      }
+
+      // Final validation to ensure we're not sending any dummy values to the API
+      if (final_session_id.startsWith('session_')) {
+        // Generate a guaranteed valid session ID
+        final_session_id = Date.now().toString(36) + Math.random().toString(36).substring(2, 10);
+        console.log(`[verifyOTP] Replaced dummy session_id with generated ID: ${final_session_id}`);
+        
+        // Store this in metadata
+        if (authentication.metadata) {
+          authentication.metadata.session_id = final_session_id;
         }
       }
 
@@ -375,6 +440,15 @@ CONTEXT: You might be called from the main real estate agent OR from the schedul
        }
 
       console.log("[verifyOTP] Making request with: org_id:", final_org_id, "chatbot_id:", final_chatbot_id, "session_id:", final_session_id);
+
+      // Enhanced logging of the final values after all validations
+      console.log("[verifyOTP] FINAL VALIDATED VALUES:", {
+        session_id: final_session_id,
+        org_id: final_org_id,
+        chatbot_id: final_chatbot_id,
+        phone_number: phone_number,
+        otp: otp
+      });
 
       const requestBody = {
         session_id: final_session_id,
@@ -389,6 +463,9 @@ CONTEXT: You might be called from the main real estate agent OR from the schedul
       try {
          // Ensure Supabase URL is in environment variables or config
          const supabaseFuncUrl = process.env.NEXT_PUBLIC_SUPABASE_FUNC_URL || "https://dsakezvdiwmoobugchgu.supabase.co/functions/v1/phoneAuth";
+         console.log(`[verifyOTP] Using phoneAuth URL: ${supabaseFuncUrl}`);
+         console.log(`[verifyOTP] Request body: ${JSON.stringify(requestBody)}`);
+         
          const response = await fetch(
            supabaseFuncUrl,
            {

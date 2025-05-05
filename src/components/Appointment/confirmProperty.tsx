@@ -151,7 +151,7 @@ export default function PropertyConfirmation({
           animate="visible"
           exit="exit"
         >
-          <TimePick schedule={schedule} property={property} />
+          <TimePick schedule={schedule} property={property} onTimeSelect={(date, time) => console.log(date, time)} />
         </motion.div>
       )}
     </AnimatePresence>

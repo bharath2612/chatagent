@@ -103,6 +103,10 @@ export default function TimePick({ schedule, property, onTimeSelect, timeSlots }
     
     // Clear any previously selected time
     setSelectedTime(null);
+    
+    // IMPORTANT: Notify the parent component about date selection ONLY
+    // This triggers the agent to respond with a prompt to select time
+    onTimeSelect(formattedDate, '');
   };
   
   // When a time is selected, update the selectedTime state and call the onTimeSelect callback
