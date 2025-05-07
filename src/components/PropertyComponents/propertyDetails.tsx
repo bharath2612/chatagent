@@ -1,8 +1,7 @@
 "use client"
 
-import { useState } from "react"
-import { X, MapPin, Send } from "lucide-react"
-import Image from "next/image"
+import { useState, useRef } from "react"
+import { X, Share, ExternalLink, MapPin, Maximize2 } from "lucide-react"
 import ImageCarousel from "./imageCarousel"
 
 interface PropertyUnit {
@@ -14,165 +13,351 @@ interface Amenity {
 }
 
 interface PropertyLocation {
-  city: string
-  mapUrl: string
+  city?: string
+  mapUrl?: string
+  coords?: string
 }
 
 interface PropertyImage {
-  url: string
-  alt: string
+  url?: string
+  alt?: string
 }
 
-interface PropertyProps {
-  name: string
-  price: string
-  area :string
-  location: PropertyLocation
-  mainImage: string
-  galleryImages: PropertyImage[]
-  units: PropertyUnit[]
-  amenities: Amenity[]
-  onClose?: () => void
-  onScheduleVisit?: (property: PropertyProps) => void
+interface PropertyDetailsProps {
+  id?: string
+  name?: string
+  price?: string
+  area?: string
+  location?: PropertyLocation
+  mainImage?: string
+  galleryImages?: PropertyImage[]
+  units?: PropertyUnit[]
+  amenities?: Amenity[]
+  description?: string
+  websiteUrl?: string
+  onClose: () => void
+  onScheduleVisit?: (property: PropertyDetailsProps) => void
 }
+
+// Helper function to convert Google Maps URL to embed URL
+const getEmbedUrl = (mapUrl: string) => {
+  try {
+    // If it's already an embed URL, return as is
+    if (mapUrl.includes('maps/embed')) return mapUrl;
+    
+    // Extract the place coordinates or query
+    const url = new URL(mapUrl);
+    let place = url.searchParams.get('q') || 
+                url.pathname.split('@')[1]?.split('/')[0] || 
+                url.pathname.split('/place/')[1]?.split('/')[0];
+    
+    if (!place) return null;
+    
+    // If place contains coordinates, format them properly
+    if (place.includes(',')) {
+      const [lat, lng] = place.split(',').map(coord => coord.trim());
+      if (!isNaN(Number(lat)) && !isNaN(Number(lng))) {
+        place = `${lat},${lng}`;
+      }
+    }
+    
+    // Create embed URL with place parameter
+    return `https://www.google.com/maps/embed/v1/place?key=${process.env.NEXT_PUBLIC_GOOGLE_EMBED_API_KEY}&q=${encodeURIComponent(place)}`;
+  } catch (e) {
+    console.error('Error parsing map URL:', e);
+    return null;
+  }
+};
+
+// Create map URL from coordinates if available
+const getMapUrl = (location: PropertyLocation | undefined) => {
+  if (!location) return null;
+  
+  // If we have coordinates, use them
+  if (location.coords) {
+    const [lat, lng] = location.coords.split(',').map(coord => coord.trim());
+    if (!isNaN(Number(lat)) && !isNaN(Number(lng))) {
+      return `https://www.google.com/maps/embed/v1/place?key=${process.env.NEXT_PUBLIC_GOOGLE_EMBED_API_KEY}&q=${lat},${lng}`;
+    }
+  }
+  
+  // If we have a mapUrl, convert it to embed URL
+  if (location.mapUrl) {
+    return getEmbedUrl(location.mapUrl);
+  }
+  
+  // If we have a city, use that as fallback
+  if (location.city) {
+    return `https://www.google.com/maps/embed/v1/place?key=${process.env.NEXT_PUBLIC_GOOGLE_EMBED_API_KEY}&q=${encodeURIComponent(location.city)}`;
+  }
+  
+  return null;
+};
 
 export default function PropertyDetails({
-  name = "Skyline Heights",
-  price = "₹1.8 Crores",
-  area = "1500 sq.ft",
-  location = { city: "Chennai", mapUrl: "" },
-  mainImage = "/placeholder.svg?height=150&width=300",
-  galleryImages = [],
-  units = [{ type: "2 BHK" }, { type: "3 BHK" }],
-  amenities = [{ name: "Parking" }, { name: "Gym" }, { name: "Pool" }],
-  onScheduleVisit = () => { },
-  onClose = () => { },
-}: PropertyProps) {
-  const [carouselOpen, setCarouselOpen] = useState(false)
-  const [initialImageIndex, setInitialImageIndex] = useState(0)
+  id,
+  name,
+  price,
+  area,
+  location,
+  mainImage,
+  galleryImages,
+  units,
+  amenities,
+  description,
+  websiteUrl,
+  onClose,
+  onScheduleVisit
+}: PropertyDetailsProps) {
+  const [showImageCarousel, setShowImageCarousel] = useState(false)
+  const [carouselIndex, setCarouselIndex] = useState(0)
+  // Track failed images to prevent repeated errors
+  const failedImages = useRef<Set<string>>(new Set());
 
-  const allImages = [{ url: mainImage, alt: name }, ...galleryImages]
+  // Process images for the carousel
+  const allImages: PropertyImage[] = [];
+  
+  // Add main image to carousel if it exists
+  if (mainImage) {
+    allImages.push({ url: mainImage, alt: name });
+  }
+  
+  // Add gallery images if available
+  if (galleryImages && Array.isArray(galleryImages)) {
+    allImages.push(...galleryImages);
+  }
 
-  const openCarousel = (index: number) => {
-    setInitialImageIndex(index)
-    setCarouselOpen(true)
+  // If no images at all, add a placeholder
+  if (allImages.length === 0) {
+    allImages.push({ url: "/placeholder.svg", alt: "Placeholder image" });
   }
-  const property = {
-    name,
-    price,
-    area,
-    location,
-    mainImage,
-    galleryImages,
-    units,
-    amenities,
-  }
+
+  const handleImageError = (imageUrl: string | undefined, e: React.SyntheticEvent<HTMLImageElement>) => {
+    // Only log once and update if not already marked as failed
+    if (imageUrl && !failedImages.current.has(imageUrl)) {
+      console.log(`[PropertyDetails] Image error for ${imageUrl}, using placeholder`);
+      failedImages.current.add(imageUrl);
+      e.currentTarget.src = "/placeholder.svg";
+      e.currentTarget.onerror = null; // Prevent further errors
+    }
+  };
+
+  // Get image source with fallback handling
+  const getImageSrc = (url: string | undefined) => {
+    const src = url || "/placeholder.svg";
+    return failedImages.current.has(src) ? "/placeholder.svg" : src;
+  };
 
   return (
-    <>
-      <div className="border-amber-50 border-1 bg-white text-black rounded-lg overflow-hidden shadow-lg scroll-container">
-        <div className="bg-[#194185] text-white p-4 flex justify-between items-center">
-          <h2 className="font-semibold text-lg">Property Details</h2>
-          <button onClick={onClose} className="text-white hover:bg-blue-700">
-            <X size={18} />
+    <div className="overflow-hidden rounded-lg text-black">
+      {/* Image Carousel */}
+      {showImageCarousel && (
+        <div className="fixed inset-0 z-50">
+          <ImageCarousel
+            images={allImages}
+            initialIndex={carouselIndex}
+            onClose={() => setShowImageCarousel(false)}
+          />
+        </div>
+      )}
+      
+      {/* Main Container */}
+      <div className="bg-white rounded-lg overflow-hidden flex flex-col h-[490px]">
+        {/* Close Button */}
+        <button
+          onClick={onClose}
+          className="absolute top-1 right-1 z-10 bg-white rounded-full p-1 shadow-md"
+        >
+          <X size={18} />
+        </button>
+        
+        {/* Header Image */}
+        <div className="relative h-48">
+          <img
+            src={getImageSrc(mainImage)}
+            alt={name || "Property image"}
+            className="w-full h-full object-cover"
+            onError={(e) => handleImageError(mainImage, e)}
+          />
+          
+          {/* Fullscreen button */}
+          <button
+            onClick={() => {
+              setCarouselIndex(0)
+              setShowImageCarousel(true)
+            }}
+            className="absolute bottom-2 right-2 bg-white rounded-full p-1 shadow-md"
+          >
+            <Maximize2 size={16} />
           </button>
-        </div>
-
-        <div className="relative h-48 w-full cursor-pointer" onClick={() => openCarousel(0)}>
-          <Image src={mainImage} alt={name} fill className="object-cover" priority />
-        </div>
-
-        <div className="flex p-2 gap-2 border-b border-dashed border-gray-200">
-          {galleryImages.slice(0, 3).map((image, index) => (
-            <div
-              key={index}
-              className="relative h-[47px] w-[65px] flex-shrink-0 cursor-pointer"
-              onClick={() => openCarousel(index + 1)}
-            >
-              <Image src={image.url} alt={image.alt} fill className="object-cover rounded-sm" />
-            </div>
-          ))}
-          {galleryImages.length > 3 && (
-            <div
-              className="cursor-pointer relative h-[47px] w-[62px] flex-shrink-0 bg-gray-700 rounded-sm flex items-center justify-center text-white font-semibold"
-              onClick={() => openCarousel(3)}
-
-            >
-              {galleryImages.length - 2}+
+          
+          {/* Photo gallery thumbnails */}
+          {galleryImages && galleryImages.length > 0 && (
+            <div className="absolute bottom-2 left-2 flex space-x-1">
+              {galleryImages.slice(0, 3).map((image, index) => (
+                <button
+                  key={index}
+                  onClick={() => {
+                    setCarouselIndex(index + 1) // +1 because main image is first
+                    setShowImageCarousel(true)
+                  }}
+                  className="h-8 w-8 bg-white rounded overflow-hidden shadow-md"
+                >
+                  <img 
+                    src={getImageSrc(image.url)} 
+                    alt={image.alt || `Gallery image ${index + 1}`} 
+                    className="h-full w-full object-cover"
+                    onError={(e) => handleImageError(image.url, e)}
+                  />
+                </button>
+              ))}
+              {galleryImages.length > 3 && (
+                <button
+                  onClick={() => {
+                    setCarouselIndex(3) // Show the 4th image (index 3)
+                    setShowImageCarousel(true)
+                  }}
+                  className="h-8 w-8 bg-white rounded overflow-hidden shadow-md flex items-center justify-center text-xs font-medium"
+                >
+                  +{galleryImages.length - 3}
+                </button>
+              )}
             </div>
           )}
         </div>
-
-        <div className="p-4 border-b border-dashed border-gray-200">
-          <div className="flex justify-between items-start">
+        
+        {/* Content */}
+        <div className="p-4 flex-1 overflow-y-auto">
+          {/* Title and Price */}
+          <div className="flex items-start justify-between mb-3">
             <div>
-              <h3 className="text-lg font-semibold text-gray-800">{name}</h3>
-              <div className="flex items-center text-gray-600 mt-1">
-                <MapPin className="h-4 w-4 mr-1" />
-                <span className="text-sm">{location.city}</span>
+              <h3 className="font-bold text-lg">{name || "Property"}</h3>
+              <p className="text-gray-500 flex items-center text-sm">
+                <MapPin size={14} className="mr-1" />
+                {location?.city || "Location unavailable"}
+              </p>
+            </div>
+            <p className="text-green-600 font-bold">{price || "Price unavailable"}</p>
+          </div>
+          
+          {/* Area */}
+          {area && (
+            <div className="mb-3 flex items-center text-gray-600">
+              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18" fill="none" className="mr-1">
+                <path d="M12 6L15.75 2.25M15.75 2.25H12M15.75 2.25V6M6 6L2.25 2.25M2.25 2.25L2.25 6M2.25 2.25L6 2.25M6 12L2.25 15.75M2.25 15.75H6M2.25 15.75L2.25 12M12 12L15.75 15.75M15.75 15.75V12M15.75 15.75H12" 
+                  stroke="currentColor" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+              <span>{area}</span>
+            </div>
+          )}
+          
+          {/* Description */}
+          {description && (
+            <div className="mb-4">
+              <h4 className="font-medium mb-1">About this property</h4>
+              <p className="text-sm text-gray-600">{description}</p>
+            </div>
+          )}
+
+          {/* Interactive Map */}
+          {location && (
+            <div className="mb-4">
+              <h4 className="font-medium mb-2">Location Map</h4>
+              <div className="relative w-full h-48 rounded-lg overflow-hidden">
+                <iframe
+                  src={getMapUrl(location) || undefined}
+                  width="100%"
+                  height="100%"
+                  style={{ border: 0 }}
+                  allowFullScreen
+                  loading="lazy"
+                  referrerPolicy="no-referrer-when-downgrade"
+                  className="absolute inset-0"
+                ></iframe>
               </div>
             </div>
-            <div>
-              <h3 className=" text-gray-800">Starting from</h3>
-              <div className="text-xl font-bold text-green-700">{price}</div>
+          )}
+          
+          {/* Units */}
+          {units && units.length > 0 && (
+            <div className="mb-4">
+              <h4 className="font-medium mb-1">Available Units</h4>
+              <div className="flex flex-wrap gap-2">
+                {units.map((unit, index) => (
+                  <span key={index} className="text-xs bg-gray-100 py-1 px-2 rounded">
+                    {unit.type}
+                  </span>
+                ))}
+              </div>
             </div>
-          </div>
-        </div>
-        <button
-          className="mt-2 w-[174px] h-[40px] bg-blue-900 text-[#F5FAFF] rounded-xl ml-16 hover:bg-blue-800"
-          onClick={(e: React.MouseEvent<HTMLButtonElement>) => onScheduleVisit(property)} // Explicitly handle MouseEvent
-        >
-          Schedule a site visit
-        </button>
-        <div className="p-4 border-b border-dashed border-gray-200">
-          <h4 className="font-semibold mb-2">Types of Units</h4>
-          <div className="space-y-2 flex gap-3">
-            {units.map((unit, index) => (
-              <div key={index} className="text-gray-300 bg-[#475467] h-[32px] p-3 rounded-sm flex items-center justify-center text-lg">
-                {unit.type}
+          )}
+          
+          {/* Amenities */}
+          {amenities && amenities.length > 0 && (
+            <div className="mb-4">
+              <h4 className="font-medium mb-1">Amenities</h4>
+              <div className="flex flex-wrap gap-2">
+                {amenities.map((amenity, index) => (
+                  <span key={index} className="text-xs bg-gray-100 py-1 px-2 rounded">
+                    {amenity.name}
+                  </span>
+                ))}
               </div>
-            ))}
-          </div>
+            </div>
+          )}
+          
+          {/* Website link */}
+          {websiteUrl && (
+            <div className="mb-4">
+              <a
+                href={websiteUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-blue-600 flex items-center text-sm"
+              >
+                Visit Website <ExternalLink size={14} className="ml-1" />
+              </a>
+            </div>
+          )}
+          
+          {/* Schedule Visit Button */}
+          {onScheduleVisit && (
+            <button
+              onClick={() => onScheduleVisit({
+                id,
+                name,
+                price,
+                area,
+                location,
+                mainImage,
+                galleryImages,
+                units,
+                amenities,
+                description,
+                websiteUrl,
+                onClose: () => {} // Add empty onClose function to satisfy type
+              })}
+              className="w-full bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700 transition-colors"
+            >
+              Schedule a Visit
+            </button>
+          )}
         </div>
-
-        <div className="p-4 border-b border-dashed border-gray-200">
-          <h4 className="font-semibold mb-2">Amenities</h4>
-          <div className="grid grid-cols-2 gap-y-2">
-            {amenities.map((amenity, index) => (
-              <div key={index} className="flex items-center text-gray-700">
-                <span className="h-1.5 w-1.5 rounded-full bg-gray-700 mr-2"></span>
-                {amenity.name}
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="p-4">
-          <h4 className="font-semibold mb-2">Location</h4>
-          <div className="relative h-28 w-full rounded overflow-hidden">
-            <iframe
-              src={location.mapUrl || "https://www.google.com/maps/embed?pb=!1m18!1m12!1m3!1d3503.5096853911874!2d77.49743461508212!3d28.58648098243483!2m3!1f0!2f0!3f0!3m2!1i1024!2i768!4f13.1!3m3!1m2!1s0x390cfb693ac619c3%3A0xd138a50d9e17f11b!2sKIET%20Group%20of%20Institutions!5e0!3m2!1sen!2sin!4v1631101948034!5m2!1sen!2sin"}
-              loading="lazy"
-              allowFullScreen
-              className="absolute top-0 left-0 w-full h-full border-0"
-            ></iframe>
-          </div>
-        </div>
-
-        {/* <div className="absolute bottom-3 right-3">
-          <button className="bg-white p-2 rounded-full shadow">
-            <Send size={18} className="text-blue-800" />
+        
+        {/* Actions */}
+        <div className="p-3 border-t border-gray-200 flex justify-between">
+          <button
+            onClick={() => onScheduleVisit?.({ id, name, price, area, location, mainImage, galleryImages, units, amenities, description, websiteUrl, onClose })}
+            className="bg-blue-600 text-white px-4 py-2 rounded font-medium flex-1"
+          >
+            Schedule a Visit
           </button>
-        </div> */}
+          
+          <button className="ml-2 bg-gray-100 p-2 rounded">
+            <Share size={18} />
+          </button>
+        </div>
       </div>
-
-      {carouselOpen && (
-        <ImageCarousel
-          images={allImages}
-          initialIndex={initialImageIndex}
-          onClose={() => setCarouselOpen(false)}
-        />
-      )}
-    </>
+    </div>
   )
 }

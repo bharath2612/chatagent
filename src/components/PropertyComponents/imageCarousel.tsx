@@ -1,12 +1,12 @@
 "use client"
 
 import type React from "react"
-import { useState, useCallback, useEffect } from "react"
+import { useState, useCallback, useEffect, useRef } from "react"
 import { X, ChevronLeft, ChevronRight } from "lucide-react"
 
 interface PropertyImage {
-  url: string
-  alt: string
+  url?: string
+  alt?: string
 }
 
 interface ImageCarouselProps {
@@ -17,6 +17,8 @@ interface ImageCarouselProps {
 
 const ImageCarousel: React.FC<ImageCarouselProps> = ({ images = [], initialIndex = 0, onClose }) => {
   const [currentIndex, setCurrentIndex] = useState(initialIndex)
+  // Track failed images to prevent repeated errors
+  const failedImages = useRef<Set<string>>(new Set());
 
   const nextImage = useCallback(() => {
     setCurrentIndex((prevIndex) => (prevIndex + 1) % images.length)
@@ -43,6 +45,22 @@ const ImageCarousel: React.FC<ImageCarouselProps> = ({ images = [], initialIndex
       document.body.style.overflow = "auto"
     }
   }, [])
+
+  const handleImageError = (imageUrl: string | undefined, e: React.SyntheticEvent<HTMLImageElement>) => {
+    // Only log once and update if not already marked as failed
+    if (imageUrl && !failedImages.current.has(imageUrl)) {
+      console.log(`[ImageCarousel] Image error for ${imageUrl}, using placeholder`);
+      failedImages.current.add(imageUrl);
+      e.currentTarget.src = "/placeholder.svg";
+      e.currentTarget.onerror = null; // Prevent further errors
+    }
+  };
+
+  // Get image source with fallback handling
+  const getImageSrc = (image: PropertyImage) => {
+    const src = image?.url || "/placeholder.svg";
+    return failedImages.current.has(src) ? "/placeholder.svg" : src;
+  };
 
   if (images.length === 0) {
     return null
@@ -76,9 +94,10 @@ const ImageCarousel: React.FC<ImageCarouselProps> = ({ images = [], initialIndex
 
         <div className="absolute top-2/8">
             <img
-              src={images[currentIndex]?.url || "/placeholder.svg"}
+              src={getImageSrc(images[currentIndex] || {})}
               alt={images[currentIndex]?.alt || `Carousel Image ${currentIndex + 1}`}
               className=" "
+              onError={(e) => handleImageError(images[currentIndex]?.url, e)}
             />
           </div>
 
@@ -93,9 +112,10 @@ const ImageCarousel: React.FC<ImageCarouselProps> = ({ images = [], initialIndex
                 }`}
               >
                 <img
-                  src={image.url || "/placeholder.svg"}
+                  src={getImageSrc(image)}
                   alt={image.alt || `Thumbnail ${index + 1}`}
                   className="absolute inset-0 object-cover"
+                  onError={(e) => handleImageError(image.url, e)}
                 />
               </button>
             ))}

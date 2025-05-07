@@ -1,9 +1,12 @@
 "use client"
 
-import React, { useState } from "react"
+import React, { useState, useEffect, useCallback } from "react"
 import BookingConfirmation from "./BookingConfirmation"
 import AppointmentConfirmed from "./Confirmations"
 import { motion, AnimatePresence, Variants } from "framer-motion"
+import Calendar from 'react-calendar';
+import 'react-calendar/dist/Calendar.css'; // Import calendar CSS
+import { X, ChevronLeft, ChevronRight } from "lucide-react"
 
 interface PropertyUnit {
   type: string
@@ -14,26 +17,31 @@ interface Amenity {
 }
 
 interface PropertyLocation {
-  city: string
-  mapUrl: string
+  city?: string
+  mapUrl?: string
+  coords?: string
 }
 
 interface PropertyImage {
-  url: string
-  alt: string
+  url?: string
+  alt?: string
 }
 
 interface PropertyProps {
-  name: string
-  price: string
-  area :string
-  location: PropertyLocation
-  mainImage: string
-  galleryImages: PropertyImage[]
-  units: PropertyUnit[]
-  amenities: Amenity[]
+  id?: string
+  name?: string
+  price?: string
+  area?: string
+  location?: PropertyLocation
+  mainImage?: string
+  galleryImages?: PropertyImage[]
+  units?: PropertyUnit[]
+  amenities?: Amenity[]
+  description?: string
+  websiteUrl?: string
   onClose?: () => void
 }
+
 // Animation variants for the container
 const containerVariants: Variants = {
   hidden: { opacity: 0, y: 20 },
@@ -56,111 +64,216 @@ const childVariants: Variants = {
 }
 
 type Schedule = {
-  [day: string]: string[]
+  [day: string]: string[] // Format: "Weekday, Month Day" -> ["11:00 AM", "4:00 PM"]
 }
 
 interface TimePickProps {
-  schedule: Schedule
-  property: PropertyProps // Add property prop
+  property: PropertyProps;
+  schedule: Record<string, string[]>;
+  onTimeSelect: (date: string, time: string) => void;
+  timeSlots?: string[];
 }
 
-export default function TimePick({ schedule, property }: TimePickProps) {
-  const [selectedDay, setSelectedDay] = useState<string>("Monday")
-  const [selectedTime, setSelectedTime] = useState<string | null>(null)
-  const [isConfirmed, setIsConfirmed] = useState<boolean>(false)
-
+export default function TimePick({ schedule, property, onTimeSelect, timeSlots }: TimePickProps) {
+  const [selectedDate, setSelectedDate] = useState<Date | null>(null);
+  const [selectedTime, setSelectedTime] = useState<string | null>(null);
+  const [availableTimes, setAvailableTimes] = useState<string[]>([]);
+  const [currentMonth, setCurrentMonth] = useState(new Date());
+  
+  const defaultTimeSlots = ["11:00 AM", "4:00 PM"];
+  const actualTimeSlots = timeSlots || defaultTimeSlots;
+  
+  // Format the date for display and storage
+  const formatDate = (date: Date): string => {
+    const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    const months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+    
+    return `${days[date.getDay()]}, ${months[date.getMonth()]} ${date.getDate()}`;
+  };
+  
+  // When a date is selected, update the selectedDate state and set available times
+  const handleDateClick = (date: Date) => {
+    const formattedDate = formatDate(date);
+    console.log(`[TimePick] Selected date: ${formattedDate}`);
+    
+    setSelectedDate(date);
+    
+    // Always use the standardized time slots for any date
+    setAvailableTimes(actualTimeSlots);
+    
+    // Clear any previously selected time
+    setSelectedTime(null);
+    
+    // IMPORTANT: Notify the parent component about date selection ONLY
+    // This triggers the agent to respond with a prompt to select time
+    onTimeSelect(formattedDate, '');
+  };
+  
+  // When a time is selected, update the selectedTime state and call the onTimeSelect callback
   const handleTimeClick = (time: string) => {
-    setSelectedTime(time)
-  }
-
-  const handleCloseConfirmation = () => {
-    setSelectedTime(null)
-  }
-
-  const handleConfirmBooking = () => {
-    setIsConfirmed(true)
-  }
+    console.log(`[TimePick] Selected time: ${time}`);
+    setSelectedTime(time);
+    
+    // Call the parent component's onTimeSelect callback with the selected date and time
+    if (selectedDate) {
+      const formattedDate = formatDate(selectedDate);
+      onTimeSelect(formattedDate, time);
+    }
+  };
+  
+  // Helper to determine if a date is selectable (for the calendar)
+  // Now we'll allow all dates except past dates
+  const isDateAvailable = (date: Date): boolean => {
+    // Don't allow past dates
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    if (date < today) return false;
+    
+    // Don't allow weekends
+    const dayOfWeek = date.getDay();
+    if (dayOfWeek === 0 || dayOfWeek === 6) return false;
+    
+    // All other dates are available
+    return true;
+  };
+  
+  // Generate calendar days for the current month
+  const generateCalendarDays = () => {
+    const daysInMonth = new Date(
+      currentMonth.getFullYear(),
+      currentMonth.getMonth() + 1,
+      0
+    ).getDate();
+    
+    const firstDayOfMonth = new Date(
+      currentMonth.getFullYear(),
+      currentMonth.getMonth(),
+      1
+    ).getDay();
+    
+    let days = [];
+    
+    // Add empty cells for days before the 1st of the month
+    for (let i = 0; i < firstDayOfMonth; i++) {
+      days.push(<div key={`empty-${i}`} className="h-10 w-10"></div>);
+    }
+    
+    // Add days of the month
+    for (let i = 1; i <= daysInMonth; i++) {
+      const date = new Date(currentMonth.getFullYear(), currentMonth.getMonth(), i);
+      const isAvailable = isDateAvailable(date);
+      const isSelected = selectedDate?.getDate() === i && 
+                        selectedDate?.getMonth() === currentMonth.getMonth() &&
+                        selectedDate?.getFullYear() === currentMonth.getFullYear();
+      
+      days.push(
+        <button
+          key={`day-${i}`}
+          className={`h-10 w-10 rounded-full flex items-center justify-center text-lg font-medium
+                     ${isAvailable ? 'cursor-pointer hover:bg-blue-500 hover:text-white hover:shadow-md active:bg-blue-600' : 'opacity-30 cursor-not-allowed'}
+                     ${isSelected ? 'bg-blue-600 text-white shadow-md' : isAvailable ? 'text-white' : 'text-gray-400'}`}
+          onClick={() => isAvailable && handleDateClick(date)}
+          disabled={!isAvailable}
+          type="button"
+          aria-label={`Select ${i}`}
+        >
+          {i}
+        </button>
+      );
+    }
+    
+    return days;
+  };
+  
+  // Navigation for the calendar
+  const goToPreviousMonth = () => {
+    setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() - 1));
+  };
+  
+  const goToNextMonth = () => {
+    setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1));
+  };
+  
+  // Get month and year for display
+  const monthYearDisplay = () => {
+    const months = ['January', 'February', 'March', 'April', 'May', 'June', 
+                   'July', 'August', 'September', 'October', 'November', 'December'];
+    return `${months[currentMonth.getMonth()]} ${currentMonth.getFullYear()}`;
+  };
 
   return (
-    <div className="p-4 absolute top-36 bg-[#0b3d91] text-white rounded-xl space-y-4">
-      <AnimatePresence mode="wait">
-        {isConfirmed ? (
-          <motion.div
-            key="appointment-confirmed"
-            variants={containerVariants}
-            initial="hidden"
-            animate="visible"
-            exit="exit"
+    <div className="bg-blue-800 rounded-xl p-6 w-full max-w-md mx-auto text-white shadow-lg">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-xl font-semibold">{property.name}</h2>
+        <button className="text-white opacity-70 hover:opacity-100 p-2 hover:bg-blue-700 rounded-full">
+          <X size={20} />
+        </button>
+      </div>
+      
+      <p className="mb-6 text-sm opacity-80">{property.description || 'Schedule a visit to view this property.'}</p>
+      
+      {/* Calendar Section */}
+      <div className="mb-6 p-4 bg-blue-900 rounded-lg shadow-inner">
+        <div className="flex justify-between items-center mb-4">
+          <button 
+            onClick={goToPreviousMonth} 
+            className="text-white p-2 hover:bg-blue-800 rounded-full transition-colors"
+            aria-label="Previous month"
           >
-            <AppointmentConfirmed property={property} />
-          </motion.div>
-        ) : selectedTime ? (
-          <motion.div
-            key="booking-confirmation"
-            variants={containerVariants}
-            initial="hidden"
-            animate="visible"
-            exit="exit"
+            <ChevronLeft size={24} />
+          </button>
+          <h3 className="text-white font-medium text-lg">{monthYearDisplay()}</h3>
+          <button 
+            onClick={goToNextMonth} 
+            className="text-white p-2 hover:bg-blue-800 rounded-full transition-colors"
+            aria-label="Next month"
           >
-            <BookingConfirmation
-              onClose={handleCloseConfirmation}
-              selectedTime={selectedTime}
-              selectedDay={selectedDay}
-              onConfirm={handleConfirmBooking}
-              property={property}
-            />
-          </motion.div>
-        ) : (
-          <motion.div
-            key="time-pick"
-            variants={containerVariants}
-            initial="hidden"
-            animate="visible"
-            exit="exit"
-          >
-            <motion.p variants={childVariants} className="text-lg ">
-              <em className="text-3xl font-sans">
-                Appointment time available for {property.name}
-              </em>
-              <select
-                className="rounded-lg mb-4 bg-transparent text-white font-semibold ml-2 text-2xl underline"
-                value={selectedDay}
-                onChange={(e) => setSelectedDay(e.target.value)}
-              >
-                <option className="bg-[#0b3d91] text-white text-2xl">--day--</option>
-                {Object.keys(schedule).map((day) => (
-                  <option
-                    key={day}
-                    value={day}
-                    className="bg-[#0b3d91] text-white"
-                  >
-                    {day}
-                  </option>
-                ))}
-              </select>
-            </motion.p>
-            <motion.div variants={childVariants} className="space-y-2">
-              {schedule[selectedDay] && schedule[selectedDay].length > 0 ? (
-                schedule[selectedDay].map((time, index) => (
-                  <motion.div
-                    key={index}
-                    variants={childVariants}
-                    className="flex justify-between items-center px-4 py-3 bg-[#1e4db7] rounded-full shadow-md cursor-pointer hover:bg-[#2a5dd8]"
-                    onClick={() => handleTimeClick(time)}
-                  >
-                    <span className="font-semibold">{selectedDay}</span>
-                    <span className="text-sm">{time}</span>
-                  </motion.div>
-                ))
-              ) : (
-                <motion.p variants={childVariants} className="italic text-sm">
-                  No time slots available
-                </motion.p>
-              )}
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+            <ChevronRight size={24} />
+          </button>
+        </div>
+        
+        {/* Day labels */}
+        <div className="grid grid-cols-7 gap-2 mb-2">
+          {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((day, index) => (
+            <div key={index} className="h-10 w-10 flex items-center justify-center text-sm font-bold text-blue-300">
+              {day}
+            </div>
+          ))}
+        </div>
+        
+        {/* Calendar days */}
+        <div className="grid grid-cols-7 gap-2">
+          {generateCalendarDays()}
+        </div>
+      </div>
+      
+      {/* Time Selection Section */}
+      {selectedDate && (
+        <div className="mb-4">
+          <h3 className="font-medium mb-4 text-lg">Available Times for {formatDate(selectedDate)}</h3>
+          <div className="grid grid-cols-2 gap-4">
+            {availableTimes.length > 0 ? (
+              availableTimes.map((time, index) => (
+                <button
+                  key={index}
+                  className={`py-4 px-6 rounded-lg border text-lg font-medium transition-all
+                    ${selectedTime === time
+                      ? 'bg-blue-600 border-blue-500 font-bold shadow-md scale-105'
+                      : 'border-blue-700 hover:bg-blue-700 hover:shadow-md active:scale-95'
+                    }`}
+                  onClick={() => handleTimeClick(time)}
+                  type="button"
+                  aria-label={`Select time ${time}`}
+                >
+                  {time}
+                </button>
+              ))
+            ) : (
+              <p className="col-span-2 text-center text-sm">No available times for this date.</p>
+            )}
+          </div>
+        </div>
+      )}
     </div>
-  )
+  );
 }
