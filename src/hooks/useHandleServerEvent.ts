@@ -18,6 +18,28 @@ type AddTranscriptMessageType = (itemId: string, role: "user" | "assistant" | "s
 type UpdateTranscriptMessageType = (itemId: string, textDelta: string, isDelta: boolean) => void;
 type UpdateTranscriptItemStatusType = (itemId: string, status: "IN_PROGRESS" | "DONE" | "ERROR") => void;
 
+// Add type for gallery state setter
+type SetGalleryStateType = (state: { isOpen: boolean; propertyName: string; images: any[] }) => void;
+
+// Define PropertyProps and PropertyImage if not already (simplified example)
+interface PropertyProps { id?: string; name?: string; [key: string]: any; }
+interface PropertyImage { url?: string; alt?: string; description?: string; }
+
+// Redefine ActiveDisplayMode if not imported or defined globally
+type ActiveDisplayMode = 
+  | 'CHAT' 
+  | 'PROPERTY_LIST' 
+  | 'PROPERTY_DETAILS' 
+  | 'IMAGE_GALLERY' 
+  | 'SCHEDULING_FORM'
+  | 'VERIFICATION_FORM'
+  | 'OTP_FORM';
+
+interface PropertyGalleryData {
+  propertyName: string;
+  images: PropertyImage[];
+}
+
 export interface UseHandleServerEventParams {
   // Required state setters and config
   setSessionStatus: (status: SessionStatus) => void;
@@ -34,6 +56,12 @@ export interface UseHandleServerEventParams {
 
   // Optional configuration
   shouldForceResponse?: boolean;
+
+  // --- New setters for UI control ---
+  setActiveDisplayMode: (mode: ActiveDisplayMode) => void;
+  setPropertyListData: (data: PropertyProps[] | null) => void;
+  setSelectedPropertyDetails: (data: PropertyProps | null) => void;
+  setPropertyGalleryData: (data: PropertyGalleryData | null) => void;
 }
 
 export function useHandleServerEvent({
@@ -47,6 +75,12 @@ export function useHandleServerEvent({
   addTranscriptMessage,
   updateTranscriptMessage,
   updateTranscriptItemStatus,
+  shouldForceResponse,
+  // Destructure new setters
+  setActiveDisplayMode,
+  setPropertyListData,
+  setSelectedPropertyDetails,
+  setPropertyGalleryData,
 }: UseHandleServerEventParams) {
   // Removed context hook calls
   // const { logServerEvent } = useEvent(); // Placeholder call - Logging can be added back if needed
@@ -151,10 +185,53 @@ export function useHandleServerEvent({
         // Tool logic exists, proceed to call it
         console.log(`[handleFunctionCall] Executing tool logic for "${functionCallParams.name}" on agent "${selectedAgentName}"`);
         const fnResult = await toolFunction(args, transcriptItems || []);
+        console.log(`[handleFunctionCall] Tool "${functionCallParams.name}" result:`, fnResult);
 
-        // Handle potential agent transfer signaled by tool logic
+        // --- Centralized UI Update Logic based on fnResult ---
+        if (fnResult && fnResult.ui_display_hint) {
+          console.log(`[handleFunctionCall] Received UI display hint: ${fnResult.ui_display_hint}`);
+          setActiveDisplayMode(fnResult.ui_display_hint as ActiveDisplayMode); // Cast to ensure type safety
+
+          // Clear all view-specific data first for a clean slate unless specified otherwise
+          setPropertyListData(null);
+          setSelectedPropertyDetails(null);
+          setPropertyGalleryData(null);
+          // Other view-specific data setters can be called here with null
+
+          // Populate data for the target mode
+          if (fnResult.ui_display_hint === 'PROPERTY_LIST' && fnResult.properties) {
+            setPropertyListData(fnResult.properties);
+          } else if (fnResult.ui_display_hint === 'PROPERTY_DETAILS' && fnResult.property_details) {
+            setSelectedPropertyDetails(fnResult.property_details);
+          } else if (fnResult.ui_display_hint === 'IMAGE_GALLERY' && fnResult.images_data) {
+            setPropertyGalleryData(fnResult.images_data);
+          } else if (fnResult.ui_display_hint === 'SCHEDULING_FORM') {
+            // Logic for scheduling form, e.g., if fnResult.scheduling_data exists
+            // This might involve setting state for availableSlots, selectedProperty in chat.tsx
+            // For now, just logging. The actual state update for slots happens in chat.tsx's handleServerEvent
+            console.log("[handleFunctionCall] SCHEDULING_FORM hint. Data:", fnResult.scheduling_data);
+          } else if (fnResult.ui_display_hint === 'VERIFICATION_FORM') {
+            console.log("[handleFunctionCall] VERIFICATION_FORM hint.");
+          } else if (fnResult.ui_display_hint === 'OTP_FORM') {
+            console.log("[handleFunctionCall] OTP_FORM hint.");
+          }
+          // If the mode is CHAT, data was already cleared.
+        } else if (fnResult && !fnResult.destination_agent) {
+          // If no specific UI hint, but not a transfer, default to CHAT to ensure messages are visible.
+          // Avoids getting stuck on a previous UI if a tool runs silently or only returns a message.
+          console.log("[handleFunctionCall] No UI hint from tool, defaulting to CHAT display mode.");
+          setActiveDisplayMode('CHAT');
+          setPropertyListData(null);
+          setSelectedPropertyDetails(null);
+          setPropertyGalleryData(null);
+        }
+        // --- End of Centralized UI Update Logic ---
+
         if (fnResult && fnResult.destination_agent) {
-          // Set the transferring flag to true - used to prevent multiple response.create events
+          // ... (agent transfer logic - ensure it correctly resets or sets UI for the new agent context) ...
+          // The new agent, upon activation, might send an initial message/tool call that sets its own UI mode.
+          // For example, scheduleMeetingAgent immediately calls getAvailableSlots.
+          // Consider if setActiveDisplayMode('CHAT') is needed here before transfer, or if new agent handles it.
           isTransferringAgentRef.current = true;
           
           const isSilent = fnResult.silentTransfer === true;
@@ -297,10 +374,10 @@ export function useHandleServerEvent({
             }
 
             // Set a timeout to reset the transferring flag
-            setTimeout(() => {
-              isTransferringAgentRef.current = false;
-              console.log("[handleFunctionCall] Reset transferring flag after timeout");
-            }, 500);
+            // setTimeout(() => {
+            //   isTransferringAgentRef.current = false;
+            //   console.log("[handleFunctionCall] Reset transferring flag after timeout");
+            // }, 500); // REMOVED TIMEOUT
             
             return; // Stop further processing in this handler
           } else {
@@ -444,73 +521,85 @@ export function useHandleServerEvent({
       }
 
       case "conversation.item.created": {
-        let text =
-          serverEvent.item?.content?.[0]?.text ??
-          serverEvent.item?.content?.[0]?.transcript ??
-          "";
-        const role = serverEvent.item?.role as "user" | "assistant";
         const itemId = serverEvent.item?.id;
+        const role = serverEvent.item?.role as "user" | "assistant" | "system";
+        let text = serverEvent.item?.content?.[0]?.text ?? serverEvent.item?.content?.[0]?.transcript ?? "";
+        const itemType = serverEvent.item?.type;
 
         if (!itemId || !role) break;
-
-        // Avoid adding duplicate items if processing is slightly delayed
-        if (transcriptItems?.some((item) => item.itemId === itemId)) {
-             console.log(`[Transcript] Skipping duplicate item creation: ${itemId}`);
+        if (transcriptItems?.some((item) => item.itemId === itemId && item.status !== 'IN_PROGRESS')) {
+             console.log(`[Transcript] Skipping duplicate non-IN_PROGRESS item creation: ${itemId}`);
              break;
         }
-
-        // Skip adding simulated "hi" messages to the transcript
         if (role === "user" && text === "hi" && serverEvent.item?.content?.[0]?.type === "input_text") {
-          console.log(`[Transcript] Skipping simulated "hi" message: ${itemId}`);
-          // Store this ID to filter out related events
           simulatedMessageIdRef.current = itemId;
           break;
         }
 
-        // Handle function_call_output specifically for getProjectDetails
-        if (serverEvent.item?.type === "function_call_output" && serverEvent.item?.name === "getProjectDetails") {
-          // Type assertion to handle function_call_output which has 'output' property
+        // If this is a function_call_output, its primary data (for UI state) should have been processed
+        // by handleFunctionCall via fnResult.ui_display_hint.
+        // Here, we mainly focus on adding the *message* part of the output to the transcript.
+        if (itemType === "function_call_output") {
+          const functionName = (serverEvent.item as any).name;
           const outputString = (serverEvent.item as any).output;
+          console.log(`[Server Event Hook] function_call_output for ${functionName}:`, outputString);
           if (outputString) {
             try {
               const outputData = JSON.parse(outputString);
-              
-              // Check if this is output from getProjectDetails with properties array
-              if (outputData.properties && Array.isArray(outputData.properties)) {
-                console.log(`[Transcript] Found properties in function_call_output: ${itemId}`);
-                // Let our callback handle displaying the properties
-                // Pass properties as the fourth argument
-                addTranscriptMessage(
-                  itemId, 
-                  "assistant", 
-                  outputData.message || "Here are the properties I found:", 
-                  outputData.properties
-                );
-                return; // Skip further processing for this event
+              // Add message to transcript if present in the outputData from the tool.
+              // The actual UI display (gallery, list, details) is driven by setActiveDisplayMode from handleFunctionCall.
+              if (outputData.message) {
+                if (!transcriptItems?.some(item => item.itemId === itemId)) {
+                    addTranscriptMessage(itemId, "assistant", outputData.message, outputData.properties || outputData.images || []);
+                } else {
+                    updateTranscriptMessage(itemId, outputData.message, false);
+                }
+              } else if (outputData.error) {
+                 if (!transcriptItems?.some(item => item.itemId === itemId)) {
+                    addTranscriptMessage(itemId, "assistant", `Error: ${outputData.error}`);
+                 } else {
+                    updateTranscriptMessage(itemId, `Error: ${outputData.error}`, false);
+                 }
+              } else if (functionName === 'getAvailableSlots' && outputData.slots) {
+                 // For getAvailableSlots, the UI update (showing slots) is triggered by setActiveDisplayMode('SCHEDULING_FORM').
+                 // The agent should also provide a textual message.
+                 const defaultSlotsMessage = "Please select a date and time for your visit.";
+                 if (!transcriptItems?.some(item => item.itemId === itemId)) {
+                    addTranscriptMessage(itemId, "assistant", outputData.text_message || defaultSlotsMessage); 
+                 } else {
+                    updateTranscriptMessage(itemId, outputData.text_message || defaultSlotsMessage, false);
+                 }
+                 // Actual slot data (outputData.slots) is handled via chat.tsx state if needed by TimePick directly,
+                 // or passed via property in fnResult.scheduling_data if that pattern is used.
               }
+              // Do not return here for all function_call_outputs, let general message handling proceed if no specific message was added.
             } catch (error) {
-              console.error("[Transcript] Error parsing function output:", error);
+              console.error(`[Transcript] Error parsing ${functionName} output in item.created:`, error);
+              // Add a generic error to transcript if parsing fails
+              if (!transcriptItems?.some(item => item.itemId === itemId)) {
+                addTranscriptMessage(itemId, "assistant", "An error occurred processing the tool's response.");
+              }
             }
           }
+          // After processing the message part, if it was a function_call_output, often we don't want to fall through to general text processing
+          // However, if the outputData.message was empty, we might want to. This logic needs care.
+          // For now, if a message was added from outputData.message, we can break.
+          if (JSON.parse(outputString || '{}').message || JSON.parse(outputString || '{}').error) break;
         }
 
-        console.log(
-          `[Transcript] Item created: role=${role}, itemId=${itemId}, has text=${!!text}`
-        );
-
-        if (
-          role === "user" &&
-          !text &&
-          serverEvent.item?.content?.[0]?.type !== "input_text"
-        ) {
+        // General message handling (user messages, or assistant messages not from function_call_output with a .message field)
+        if (role === "user" && !text && serverEvent.item?.content?.[0]?.type !== "input_text") {
           text = "[Transcribing...]";
-          console.log(
-            `[Transcript] Setting initial transcribing state for itemId=${itemId}`
-          );
         }
-        // Use the passed-in function
-        addTranscriptMessage(itemId, role, text);
-
+        // Ensure item is not already in transcript from optimistic update or previous processing pass
+        if (!transcriptItems?.some((item) => item.itemId === itemId)) {
+            addTranscriptMessage(itemId, role, text, (serverEvent.item?.type === "function_call_output" && JSON.parse((serverEvent.item as any).output || "{}").properties) || []);
+        } else if (itemType !== "function_call_output") { // Only update if not a func call output (already handled message part)
+            const existingItem = transcriptItems.find(item => item.itemId === itemId);
+            if (existingItem && existingItem.status === 'IN_PROGRESS') {
+                updateTranscriptMessage(itemId, text, false);
+            }
+        }
         break;
       }
 
@@ -571,23 +660,23 @@ export function useHandleServerEvent({
       }
 
       case "response.done": {
-        // Mark that the response is complete
         hasActiveResponseRef.current = false;
-        console.log(`[Server Event] Response done, marked as inactive`);
-        
-        // Don't trigger function calls during agent transfers
+        console.log(`[Server Event Hook] Response done. Agent: ${selectedAgentName}. Transferring flag before check: ${isTransferringAgentRef.current}`);
+
         if (isTransferringAgentRef.current) {
-          console.log(`[Server Event] Skipping function call execution during agent transfer`);
-          return;
+          console.log(`[Server Event Hook] This response.done is for agent ${selectedAgentName} which just initiated a transfer. Clearing flag and stopping its tool processing.`);
+          isTransferringAgentRef.current = false; // Clear the flag, transfer is now in effect for the next agent.
+          // Any new tool calls in serverEvent.response.output here were from the OLD agent; skip them.
+          break; 
         }
-        
+
+        // If not transferring, process tool calls for the CURRENT agent.
+        console.log(`[Server Event Hook] Response done for agent ${selectedAgentName}. Transfer flag is false. Processing output tools for this agent.`);
         if (serverEvent.response?.output) {
           serverEvent.response.output.forEach((outputItem) => {
-            if (
-              outputItem.type === "function_call" &&
-              outputItem.name &&
-              outputItem.arguments
-            ) {
+            if (outputItem.type === "function_call" && outputItem.name && outputItem.arguments) {
+              // This handleFunctionCall will execute for the selectedAgentName.
+              // If a transfer previously occurred and setSelectedAgentName was called, this should be the NEW agent.
               handleFunctionCall({
                 name: outputItem.name,
                 call_id: outputItem.call_id,
@@ -635,53 +724,39 @@ export function useHandleServerEvent({
       case "response.audio.done":
       case "response.audio_transcript.done":
         // Audio playback and transcript are complete
-        console.log(`[Server Event] Audio/transcript complete for item: ${(serverEvent as any).item_id}`);
+        console.log(`[Server Event] Audio playback and transcript are complete`);
         break;
 
-      // Handle potential errors from the session
-       case "session.error": {
+      case "session.error": {
            console.error("[Session Error Event] Received session.error:", serverEvent);
-           // Access error details correctly based on ServerEvent type
            const errorMessage = serverEvent.response?.status_details?.error?.message || 'Unknown session error';
            addTranscriptMessage(generateSafeId(), 'system', `Session Error: ${errorMessage}`);
-           setSessionStatus("DISCONNECTED"); // Disconnect on session error
+           setSessionStatus("DISCONNECTED"); 
            break;
        }
-
-       // Add specific handling for the top-level 'error' event type
        case "error": { 
            console.error("[Top-Level Error Event] Received error event:", serverEvent);
-           // Access error details - structure might vary, logging the whole event
-           const errorDetails = (serverEvent as any).error; // Use type assertion as structure is unknown
+           const errorDetails = (serverEvent as any).error;
            const errorMessage = errorDetails?.message || JSON.stringify(serverEvent) || 'Unknown error structure from server';
            const errorCode = errorDetails?.code || 'N/A';
            console.error(`[Top-Level Error Event] Code: ${errorCode}, Message: ${errorMessage}`, errorDetails, serverEvent);
-           
-           // If we get a "conversation_already_has_active_response" error, update our tracking state
            if (errorCode === "conversation_already_has_active_response") {
              hasActiveResponseRef.current = true;
              console.log("[Error Handler] Marked response as active due to error");
            }
-           
-           // Add error message to transcript
-           // Only add visible error message for non-"conversation_already_has_active_response" errors
            if (errorCode !== "conversation_already_has_active_response") {
              addTranscriptMessage(generateSafeId(), 'system', `Server Error (${errorCode}): ${errorMessage}`);
            }
            break;
        }
-
       default:
-         console.log(`[handleServerEvent] Unhandled event type: ${serverEvent.type}`);
+         console.log(`[Server Event Hook] Unhandled event type: ${serverEvent.type}`);
         break;
     }
   };
 
-  // Use a ref to ensure the latest handler function is always called by listeners
   const handleServerEventRef = useRef(handleServerEvent);
 
-  // Update the ref whenever the handler function potentially changes
-  // Dependencies include everything the handler function closes over
   useEffect(() => {
     handleServerEventRef.current = handleServerEvent;
   }, [
@@ -690,19 +765,21 @@ export function useHandleServerEvent({
       selectedAgentConfigSet,
       sendClientEvent,
       setSelectedAgentName,
-      transcriptItems, // Include state used within the handler
+      transcriptItems,
       addTranscriptMessage,
       updateTranscriptMessage,
-      updateTranscriptItemStatus
+      updateTranscriptItemStatus,
+      setActiveDisplayMode,
+      setPropertyListData,
+      setSelectedPropertyDetails,
+      setPropertyGalleryData,
   ]);
 
-  // Expose a function to check if a response is active before creating a new one
   const canCreateResponse = () => !hasActiveResponseRef.current && !isTransferringAgentRef.current;
 
-  // Return both the event handler ref and the canCreateResponse function
   return {
     handleServerEvent: handleServerEventRef,
     canCreateResponse,
     setSimulatedMessageId: (id: string) => { simulatedMessageIdRef.current = id; }
   };
-} 
+}

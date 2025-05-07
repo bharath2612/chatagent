@@ -319,29 +319,6 @@ export default function PropertyDetails({
               </a>
             </div>
           )}
-          
-          {/* Schedule Visit Button */}
-          {onScheduleVisit && (
-            <button
-              onClick={() => onScheduleVisit({
-                id,
-                name,
-                price,
-                area,
-                location,
-                mainImage,
-                galleryImages,
-                units,
-                amenities,
-                description,
-                websiteUrl,
-                onClose: () => {} // Add empty onClose function to satisfy type
-              })}
-              className="w-full bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700 transition-colors"
-            >
-              Schedule a Visit
-            </button>
-          )}
         </div>
         
         {/* Actions */}
