@@ -15,6 +15,7 @@ interface Amenity {
 interface PropertyLocation {
   city?: string
   mapUrl?: string
+  coords?: string
 }
 
 interface PropertyImage {
@@ -37,6 +38,61 @@ interface PropertyDetailsProps {
   onClose: () => void
   onScheduleVisit?: (property: PropertyDetailsProps) => void
 }
+
+// Helper function to convert Google Maps URL to embed URL
+const getEmbedUrl = (mapUrl: string) => {
+  try {
+    // If it's already an embed URL, return as is
+    if (mapUrl.includes('maps/embed')) return mapUrl;
+    
+    // Extract the place coordinates or query
+    const url = new URL(mapUrl);
+    let place = url.searchParams.get('q') || 
+                url.pathname.split('@')[1]?.split('/')[0] || 
+                url.pathname.split('/place/')[1]?.split('/')[0];
+    
+    if (!place) return null;
+    
+    // If place contains coordinates, format them properly
+    if (place.includes(',')) {
+      const [lat, lng] = place.split(',').map(coord => coord.trim());
+      if (!isNaN(Number(lat)) && !isNaN(Number(lng))) {
+        place = `${lat},${lng}`;
+      }
+    }
+    
+    // Create embed URL with place parameter
+    return `https://www.google.com/maps/embed/v1/place?key=${process.env.NEXT_PUBLIC_GOOGLE_EMBED_API_KEY}&q=${encodeURIComponent(place)}`;
+  } catch (e) {
+    console.error('Error parsing map URL:', e);
+    return null;
+  }
+};
+
+// Create map URL from coordinates if available
+const getMapUrl = (location: PropertyLocation | undefined) => {
+  if (!location) return null;
+  
+  // If we have coordinates, use them
+  if (location.coords) {
+    const [lat, lng] = location.coords.split(',').map(coord => coord.trim());
+    if (!isNaN(Number(lat)) && !isNaN(Number(lng))) {
+      return `https://www.google.com/maps/embed/v1/place?key=${process.env.NEXT_PUBLIC_GOOGLE_EMBED_API_KEY}&q=${lat},${lng}`;
+    }
+  }
+  
+  // If we have a mapUrl, convert it to embed URL
+  if (location.mapUrl) {
+    return getEmbedUrl(location.mapUrl);
+  }
+  
+  // If we have a city, use that as fallback
+  if (location.city) {
+    return `https://www.google.com/maps/embed/v1/place?key=${process.env.NEXT_PUBLIC_GOOGLE_EMBED_API_KEY}&q=${encodeURIComponent(location.city)}`;
+  }
+  
+  return null;
+};
 
 export default function PropertyDetails({
   id,
@@ -202,6 +258,25 @@ export default function PropertyDetails({
               <p className="text-sm text-gray-600">{description}</p>
             </div>
           )}
+
+          {/* Interactive Map */}
+          {location && (
+            <div className="mb-4">
+              <h4 className="font-medium mb-2">Location Map</h4>
+              <div className="relative w-full h-48 rounded-lg overflow-hidden">
+                <iframe
+                  src={getMapUrl(location) || undefined}
+                  width="100%"
+                  height="100%"
+                  style={{ border: 0 }}
+                  allowFullScreen
+                  loading="lazy"
+                  referrerPolicy="no-referrer-when-downgrade"
+                  className="absolute inset-0"
+                ></iframe>
+              </div>
+            </div>
+          )}
           
           {/* Units */}
           {units && units.length > 0 && (
@@ -231,21 +306,6 @@ export default function PropertyDetails({
             </div>
           )}
           
-          {/* Map link */}
-          {location?.mapUrl && (
-            <div className="mb-4">
-              <a
-                href={location.mapUrl}
-                target="_blank"
-                rel="noopener noreferrer" 
-                className="text-blue-600 flex items-center text-sm"
-              >
-                <MapPin size={14} className="mr-1" />
-                View on map
-              </a>
-            </div>
-          )}
-          
           {/* Website link */}
           {websiteUrl && (
             <div className="mb-4">
@@ -255,10 +315,32 @@ export default function PropertyDetails({
                 rel="noopener noreferrer"
                 className="text-blue-600 flex items-center text-sm"
               >
-                <ExternalLink size={14} className="mr-1" />
-                Visit website
+                Visit Website <ExternalLink size={14} className="ml-1" />
               </a>
             </div>
+          )}
+          
+          {/* Schedule Visit Button */}
+          {onScheduleVisit && (
+            <button
+              onClick={() => onScheduleVisit({
+                id,
+                name,
+                price,
+                area,
+                location,
+                mainImage,
+                galleryImages,
+                units,
+                amenities,
+                description,
+                websiteUrl,
+                onClose: () => {} // Add empty onClose function to satisfy type
+              })}
+              className="w-full bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700 transition-colors"
+            >
+              Schedule a Visit
+            </button>
           )}
         </div>
         

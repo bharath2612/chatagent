@@ -280,7 +280,7 @@ const scheduleMeetingAgent: AgentConfig = {
             console.log("[scheduleVisit] Schedule visit successful via API:", result);
 
             // Return structure indicating completion and transfer is needed
-            return {
+            return { 
               booking_confirmed: true, // Signal confirmation
               confirmed_date: actualVisitDateTime, // Pass back details for confirmation message
               // Let the agent decide to call completeScheduling based on this tool's success
