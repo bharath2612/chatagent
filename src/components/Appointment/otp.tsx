@@ -105,11 +105,13 @@ export default function OTPInput({ onSubmit, onCancel }: OTPInputProps) {
   const isComplete = otp.every(digit => digit !== "")
   
   return (
-    <div className="bg-blue-800 rounded-xl p-6 w-full max-w-md mx-auto text-white shadow-lg">
-      <h2 className="text-xl font-semibold mb-2">Enter Verification Code</h2>
-      <p className="text-sm opacity-80 mb-6">We sent a 6-digit code to your phone number. Please enter it below to continue.</p>
+    <div className="bg-blue-800 rounded-xl p-4 sm:p-6 w-full max-w-md mx-auto text-white shadow-lg">
+      <h2 className="text-xl font-semibold mb-2 text-center">Enter Verification Code</h2>
+      <p className="text-sm opacity-80 mb-6 text-center">
+        We sent a 6-digit code to your phone number. Please enter it below to continue.
+      </p>
       
-      <div className="flex justify-between space-x-2 mb-6">
+      <div className="grid grid-cols-6 gap-1 sm:gap-2 mb-6 px-2">
         {Array.from({ length: 6 }, (_, i) => (
           <input
             key={i}
@@ -121,9 +123,9 @@ export default function OTPInput({ onSubmit, onCancel }: OTPInputProps) {
             ref={(el) => {
               inputRefs.current[i] = el
             }}
-            className="w-12 h-14 text-center text-xl bg-blue-700 border-2 border-blue-600 
+            className="w-full aspect-square text-center text-xl bg-blue-700 border-2 border-blue-600 
                       rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent
-                      text-white"
+                      text-white min-w-0"
             autoComplete="one-time-code"
             inputMode="numeric"
             pattern="[0-9]*"
@@ -132,11 +134,11 @@ export default function OTPInput({ onSubmit, onCancel }: OTPInputProps) {
         ))}
       </div>
       
-      <div className="flex space-x-4">
+      <div className="flex flex-col sm:flex-row gap-2 sm:gap-4 px-2">
         {onCancel && (
           <button
             onClick={onCancel}
-            className="flex-1 px-4 py-3 bg-blue-700 hover:bg-blue-600 transition-colors rounded-md"
+            className="w-full sm:flex-1 px-4 py-3 bg-blue-700 hover:bg-blue-600 transition-colors rounded-md"
             disabled={isSubmitting}
             type="button"
           >
@@ -146,7 +148,7 @@ export default function OTPInput({ onSubmit, onCancel }: OTPInputProps) {
         
         <motion.button
           onClick={handleSubmit}
-          className={`flex-1 px-4 py-3 rounded-md transition-colors ${
+          className={`w-full sm:flex-1 px-4 py-3 rounded-md transition-colors ${
             isComplete 
               ? 'bg-blue-500 hover:bg-blue-400' 
               : 'bg-blue-700 opacity-50 cursor-not-allowed'

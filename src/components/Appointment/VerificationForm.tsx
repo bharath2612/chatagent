@@ -23,27 +23,53 @@ const childVariants: Variants = {
   visible: { opacity: 1, y: 0, transition: { duration: 0.3 } },
 };
 
+// Country codes data
+const countryCodes = [
+  { code: "+1", country: "US/Canada" },
+  { code: "+44", country: "UK" },
+  { code: "+91", country: "India" },
+  { code: "+61", country: "Australia" },
+  { code: "+86", country: "China" },
+  { code: "+81", country: "Japan" },
+  { code: "+49", country: "Germany" },
+  { code: "+33", country: "France" },
+  { code: "+39", country: "Italy" },
+  { code: "+7", country: "Russia" },
+  { code: "+34", country: "Spain" },
+  { code: "+55", country: "Brazil" },
+  { code: "+52", country: "Mexico" },
+  { code: "+65", country: "Singapore" },
+  { code: "+971", country: "UAE" },
+].sort((a, b) => a.country.localeCompare(b.country));
+
 interface VerificationFormProps {
   onSubmit?: (name: string, phone: string) => void;
 }
 
 const VerificationForm = ({ onSubmit }: VerificationFormProps) => {
   const [name, setName] = useState("");
-  const [phone, setPhone] = useState("");
+  const [selectedCountryCode, setSelectedCountryCode] = useState("+91"); // Changed default to India
+  const [localNumber, setLocalNumber] = useState("");
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     // Basic validation
-    if (!name.trim() || !phone.trim()) {
+    if (!name.trim() || !localNumber.trim()) {
       alert("Please enter both name and phone number.");
       return;
     }
-    if (!/^\+\d{10,15}$/.test(phone.trim())) {
-        alert("Please enter phone number in E.164 format (e.g., +1234567890).");
-        return;
+    
+    // Combine country code and local number
+    const fullPhoneNumber = selectedCountryCode + localNumber.trim();
+    
+    // Validate the complete phone number
+    if (!/^\+\d{10,15}$/.test(fullPhoneNumber)) {
+      alert("Please enter a valid phone number.");
+      return;
     }
+    
     if (onSubmit) {
-      onSubmit(name.trim(), phone.trim());
+      onSubmit(name.trim(), fullPhoneNumber);
     }
   };
 
@@ -53,8 +79,7 @@ const VerificationForm = ({ onSubmit }: VerificationFormProps) => {
       initial="hidden"
       animate="visible"
       exit="exit"
-      className="p-4 bg-[#0b3d91] text-white rounded-xl"
-      style={{ margin: 'auto', maxWidth: 'calc(100% - 2rem)' }}
+      className="p-4 bg-[#0b3d91] text-white rounded-xl w-full max-w-md mx-auto"
     >
       <motion.h3 variants={childVariants} className="text-lg font-semibold mb-3 text-center">
         Verification Required
@@ -62,7 +87,7 @@ const VerificationForm = ({ onSubmit }: VerificationFormProps) => {
       <motion.p variants={childVariants} className="text-sm mb-4 text-center">
         Please provide your contact details:
       </motion.p>
-      <form onSubmit={handleSubmit}>
+      <form onSubmit={handleSubmit} className="w-full">
         <motion.div variants={childVariants} className="mb-3">
           <label className="block text-sm mb-1">Full Name</label>
           <input
@@ -75,17 +100,36 @@ const VerificationForm = ({ onSubmit }: VerificationFormProps) => {
           />
         </motion.div>
         <motion.div variants={childVariants} className="mb-4">
-          <label className="block text-sm mb-1">Phone Number (e.g., +1...)</label>
-          <input
-            type="tel"
-            value={phone}
-            onChange={(e) => setPhone(e.target.value)}
-            className="w-full p-2 text-gray-900 rounded bg-white placeholder-gray-500"
-            placeholder="+1234567890"
-            required
-            pattern="^\+\d{10,15}$"
-            title="Phone number must start with + and country code (e.g., +1234567890)"
-          />
+          <label className="block text-sm mb-1">Phone Number</label>
+          <div className="flex flex-col sm:flex-row gap-2">
+            <select
+              value={selectedCountryCode}
+              onChange={(e) => setSelectedCountryCode(e.target.value)}
+              className="p-2 text-gray-900 rounded bg-white w-full sm:w-32 text-sm"
+            >
+              {countryCodes.map((country) => (
+                <option key={country.code} value={country.code}>
+                  {country.code} {country.country}
+                </option>
+              ))}
+            </select>
+            <input
+              type="tel"
+              value={localNumber}
+              onChange={(e) => {
+                // Only allow digits
+                const value = e.target.value.replace(/\D/g, '');
+                setLocalNumber(value);
+              }}
+              className="flex-1 p-2 text-gray-900 rounded bg-white placeholder-gray-500 min-w-0"
+              placeholder="Enter phone number"
+              required
+              maxLength={10}
+            />
+          </div>
+          <p className="text-xs mt-1 text-gray-300">
+            Enter your phone number without country code (e.g., 8281840462)
+          </p>
         </motion.div>
         <motion.button
           variants={childVariants}
