@@ -2,7 +2,7 @@
 
 import React, { useState, useRef, useEffect, useCallback } from "react"
 import { motion, AnimatePresence } from "framer-motion"
-import { MessageSquare, X, Mic, MicOff, Phone, Send, PhoneOff, Loader } from "lucide-react"
+import { MessageSquare, X, Mic, MicOff, Phone, Send, PhoneOff, Loader, ArrowLeft } from "lucide-react"
 import { v4 as uuidv4 } from 'uuid';
 
 // UI Components
@@ -586,6 +586,9 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
                         
                         // Always show time slots when we get them
                         setShowTimeSlots(true);
+                        
+                        // CRITICAL FIX: Set the display mode to SCHEDULING_FORM to ensure the UI shows the form
+                        setActiveDisplayMode('SCHEDULING_FORM');
                         
                         // Set verification screen state based on verification status
                         // We'll show this later when the user selects a time
@@ -1674,13 +1677,24 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
         </div>
       ) : (
         <>
-          {sessionStatus === 'CONNECTED' && activeDisplayMode === 'CHAT' && (
+          {sessionStatus === 'CONNECTED' && (activeDisplayMode === 'CHAT' || activeDisplayMode === 'IMAGE_GALLERY') && (
              <div className="border-1 h-10 rounded-3xl w-72 p-4 justify-evenly ml-5 my-2 flex-shrink-0">
                <VoiceWaveform
                  mediaStream={audioElementRef.current?.srcObject as MediaStream}
                  active={sessionStatus === 'CONNECTED' && !!audioElementRef.current?.srcObject}
                />
              </div>
+          )}
+
+          {/* Back button for IMAGE_GALLERY */}
+          {activeDisplayMode === 'IMAGE_GALLERY' && (
+            <button
+              onClick={handleCloseGallery}
+              className="mb-2 ml-4 self-start bg-blue-700 hover:bg-blue-600 text-white font-medium py-2 px-4 rounded-lg flex items-center shadow"
+            >
+              <ArrowLeft size={16} className="mr-2" />
+              Back
+            </button>
           )}
 
           {/* --- Main Content Area --- */}
@@ -1739,6 +1753,17 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
                </motion.div>
             )}
             
+            {/* इंश्योर PropertyImageGallery is rendered here, inside the main scrollable content div */}
+            {activeDisplayMode === 'IMAGE_GALLERY' && propertyGalleryData && (
+              <div className="w-full"> {/* Wrapper for consistent layout */}
+                <PropertyImageGallery
+                  propertyName={propertyGalleryData.propertyName}
+                  images={propertyGalleryData.images}
+                  onClose={handleCloseGallery} 
+                />
+              </div>
+            )}
+            
             {activeDisplayMode === 'CHAT' && (
               <div className="flex flex-col justify-center items-center h-full text-center px-4">
                  {/* Display last agent message prominently */} 
@@ -1758,23 +1783,15 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
             <div ref={transcriptEndRef} />
           </div>
 
-          {/* User Transcription Overlay (Only in CHAT mode) */} 
+          {/* User Transcription Overlay (Only in CHAT mode) */}
           {activeDisplayMode === 'CHAT' && transcriptItems
-              .filter(item => item.type === 'MESSAGE' && item.role === 'user' && item.status !== 'DONE') // Show in-progress or last user message
-              .slice(-1)
-              .map(item => (
-                <div key={item.itemId} className="absolute bottom-20 right-4 max-w-[80%] bg-blue-600 p-3 rounded-xl text-sm text-white rounded-br-none z-20 shadow-lg">
-                  {item.text || '[Transcribing...]'}
-                </div>
-          ))}
-
-          {activeDisplayMode === 'IMAGE_GALLERY' && propertyGalleryData && (
-            <PropertyImageGallery
-              propertyName={propertyGalleryData.propertyName}
-              images={propertyGalleryData.images}
-              onClose={handleCloseGallery}
-            />
-          )}
+            .filter(item => item.type === 'MESSAGE' && item.role === 'user' && item.status !== 'DONE') // Show in-progress or last user message
+            .slice(-1)
+            .map(item => (
+              <div key={item.itemId} className="absolute bottom-20 right-4 max-w-[80%] bg-blue-600 p-3 rounded-xl text-sm text-white rounded-br-none z-20 shadow-lg">
+                {item.text || '[Transcribing...]'}
+              </div>
+        ))}
 
           {activeDisplayMode === 'PROPERTY_DETAILS' && selectedPropertyDetails && (
               <div className="absolute inset-0 bg-blue-900 bg-opacity-50 backdrop-blur-sm flex items-center justify-center z-10 p-4">
@@ -1829,7 +1846,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
                 {sessionStatus === 'CONNECTING' ? <Loader size={18} className="animate-spin"/> : sessionStatus === 'CONNECTED' ? <PhoneOff size={18} /> : <Phone size={18} />}
               </button>
             </div>
-          </div> {/* This was the problematic spot, ensuring it correctly closes the parent div */}
+          </div>
         </>
       )}
       

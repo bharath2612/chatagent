@@ -25,12 +25,17 @@ export default function PropertyImageGallery({ propertyName, images, onClose }: 
   }))
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      <ImageCarousel
-        images={carouselImages}
-        initialIndex={currentIndex}
-        onClose={onClose}
-      />
+    <div className="relative w-full flex flex-col h-full">
+      <div className="text-center mb-2">
+        <h3 className="text-lg font-medium">{propertyName}</h3>
+      </div>
+      <div className="flex-1 overflow-hidden rounded-lg">
+        <ImageCarousel
+          images={carouselImages}
+          initialIndex={currentIndex}
+          onClose={onClose}
+        />
+      </div>
     </div>
   )
 } 
