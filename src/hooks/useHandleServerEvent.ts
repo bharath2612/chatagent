@@ -536,6 +536,10 @@ export function useHandleServerEvent({
           break;
         }
 
+        if(isTransferringAgentRef.current && role==="assistant") {
+          console.log(`[Server Event Hook] Skipping item creation for agent transfer: ${itemId}`);
+          break;
+        }
         // If this is a function_call_output, its primary data (for UI state) should have been processed
         // by handleFunctionCall via fnResult.ui_display_hint.
         // Here, we mainly focus on adding the *message* part of the output to the transcript.
