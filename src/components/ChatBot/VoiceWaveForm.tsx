@@ -120,10 +120,10 @@ export function VoiceWaveform({
           // Apply improved frequency bin mapping
           const numBins = bufferLength; // Total number of frequency bins
           const numBars = barCount;   // Total number of visual bars
-
+          
           barsRef.current.forEach((bar, index) => { // 'index' is the current bar index
             if (!bar) return;
-
+            
             // Determine the range of frequency bins for this bar
             const startBin = Math.floor(index * numBins / numBars);
             const endBin = Math.floor((index + 1) * numBins / numBars) - 1;
@@ -140,7 +140,7 @@ export function VoiceWaveform({
               let count = 0;
               if (actualEndBin >= actualStartBin) {
                 for (let i = actualStartBin; i <= actualEndBin; i++) {
-                  // Apply a speech-focused weighting (boost mid-range frequencies)
+              // Apply a speech-focused weighting (boost mid-range frequencies)
                   const weight = i > numBins * 0.1 && i < numBins * 0.7 ? 1.5 : 0.8;
                   Rsum += dataArrayRef.current![i] * weight;
                   count++;

@@ -244,11 +244,17 @@ const scheduleMeetingAgent: AgentConfig = {
 
         console.log("[scheduleVisit] Schedule visit successful via API:", result);
 
+        // Update metadata to reflect that scheduling has occurred
+        if (scheduleMeetingAgent.metadata) {
+            scheduleMeetingAgent.metadata.has_scheduled = true;
+        }
+
         return { 
           booking_confirmed: true,
           confirmed_date: actualVisitDateTime,
           ui_display_hint: 'CHAT',
           message: `Great news! Your visit to ${propertyName} on ${actualVisitDateTime} is confirmed! You'll receive details shortly.`,
+          has_scheduled: true // Also include in the return for subsequent tools if needed
         };
 
       } catch (error: any) {

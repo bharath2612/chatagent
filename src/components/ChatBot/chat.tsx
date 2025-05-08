@@ -1238,6 +1238,9 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       return;
     }
     
+    // Log the newly loaded agent and its current metadata from chat.tsx state
+    console.log(`[Agent Load] Agent "${selectedAgentName}" is now active. Current chat.tsx agentMetadata:`, agentMetadata);
+    
     const wasFromAuthentication = prevAgentNameRef.current === "authentication";
     
     if (selectedAgentName === "authentication") {
@@ -1252,14 +1255,10 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       console.log("[Agent Change] Detected switch to scheduleMeeting agent.");
       setIsVerifying(false); // Hide verification UI if switching *to* scheduling
       setShowOtpScreen(false); // Hide OTP screen when switching away from authentication
-      // Existing logic to show time slots
-      if (selectedProperty) {
-        setShowTimeSlots(true);
-        setAvailableSlots({}); 
-      } else {
-        setShowTimeSlots(false);
-        setAvailableSlots({}); 
-      }
+      setShowTimeSlots(true); // Show time slotsgit
+      // Remove direct control of setShowTimeSlots here.
+      // Let getAvailableSlots tool result handle showing the time slots via setActiveDisplayMode and setShowTimeSlots.
+      // setAvailableSlots({}); // Clearing availableSlots here might be okay, or defer to getAvailableSlots
     } else if (selectedAgentName === "realEstate") {
       console.log("[Agent Change] Switched back to realEstate agent.");
       
@@ -1303,7 +1302,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
     prevAgentNameRef.current = selectedAgentName;
     
     // Reset setup flag if agent changes (handled in separate effect)
-  }, [selectedAgentName, selectedProperty]);
+  }, [selectedAgentName, selectedProperty, agentMetadata]);
 
   // --- UI Handlers --- 
   const toggleInput = () => {
