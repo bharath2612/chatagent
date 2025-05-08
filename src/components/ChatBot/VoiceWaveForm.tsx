@@ -117,38 +117,45 @@ export function VoiceWaveform({
           // Update bars based on frequency data
           const bufferLength = dataArrayRef.current.length;
           
-          // Calculate the energy in the signal - helpful for speech
-          let totalEnergy = 0;
-          for (let i = 0; i < bufferLength; i++) {
-            totalEnergy += dataArrayRef.current[i] / 255.0;
-          }
-          const averageEnergy = totalEnergy / bufferLength;
-          
-          // Use a sliding window to smooth transitions
-          const barStep = Math.ceil(bufferLength / barCount);
-          
-          barsRef.current.forEach((bar, index) => {
+          // Apply improved frequency bin mapping
+          const numBins = bufferLength; // Total number of frequency bins
+          const numBars = barCount;   // Total number of visual bars
+
+          barsRef.current.forEach((bar, index) => { // 'index' is the current bar index
             if (!bar) return;
-            
-            // Map frequencies with emphasis on speech range
-            const startFreq = Math.min(index * barStep, bufferLength - 1);
-            const endFreq = Math.min(startFreq + barStep, bufferLength - 1);
-            
-            // Calculate average for this frequency band
-            let sum = 0;
-            for (let i = startFreq; i <= endFreq; i++) {
-              // Apply a speech-focused weighting (boost mid-range frequencies)
-              const weight = i > bufferLength * 0.1 && i < bufferLength * 0.7 ? 1.5 : 0.8;
-              sum += dataArrayRef.current![i] * weight;
+
+            // Determine the range of frequency bins for this bar
+            const startBin = Math.floor(index * numBins / numBars);
+            const endBin = Math.floor((index + 1) * numBins / numBars) - 1;
+
+            // Ensure indices are within the bounds of the data array
+            const actualStartBin = Math.max(0, Math.min(startBin, numBins - 1));
+            const actualEndBin = Math.max(actualStartBin, Math.min(endBin, numBins - 1));
+
+            let value;
+            if (numBins === 0) {
+              value = 0;
+            } else {
+              let Rsum = 0;
+              let count = 0;
+              if (actualEndBin >= actualStartBin) {
+                for (let i = actualStartBin; i <= actualEndBin; i++) {
+                  // Apply a speech-focused weighting (boost mid-range frequencies)
+                  const weight = i > numBins * 0.1 && i < numBins * 0.7 ? 1.5 : 0.8;
+                  Rsum += dataArrayRef.current![i] * weight;
+                  count++;
+                }
+              }
+              value = count > 0 ? Rsum / count : 0;
             }
-            const value = sum / (endFreq - startFreq + 1);
             
             // Apply non-linear mapping for better visualization
-            const scaleFactor = (maxHeight - 4) / 255;
             const height = 4 + Math.pow(value * 0.01, 0.7) * (maxHeight - 4);
             
-            bar.style.height = `${height}px`;
-            bar.style.marginTop = `${(maxHeight - height) / 2}px`; // Center vertically
+            // Ensure min height of 2px and cap at maxHeight, then center
+            const finalHeight = Math.max(2, Math.min(height, maxHeight));
+            bar.style.height = `${finalHeight}px`; 
+            bar.style.marginTop = `${(maxHeight - finalHeight) / 2}px`; 
           });
         } catch (error) {
           // Fall back to simulation if analysis fails
