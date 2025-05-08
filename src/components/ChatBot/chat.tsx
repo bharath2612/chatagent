@@ -2,13 +2,14 @@
 
 import React, { useState, useRef, useEffect, useCallback } from "react"
 import { motion, AnimatePresence } from "framer-motion"
-import { MessageSquare, X, Mic, MicOff, Phone, Send, PhoneOff, Loader } from "lucide-react"
+import { MessageSquare, X, Mic, MicOff, Phone, Send, PhoneOff, Loader, ArrowLeft } from "lucide-react"
 import { v4 as uuidv4 } from 'uuid';
 
 // UI Components
 import PropertyList from "../PropertyComponents/PropertyList"
 import PropertyDetails from "../PropertyComponents/propertyDetails"
 import { VoiceWaveform } from "./VoiceWaveForm"
+import PropertyImageGallery from "../PropertyComponents/PropertyImageGallery"
 
 // --- Appointment UI Components ---
 import TimePick from "../Appointment/timePick";
@@ -46,6 +47,7 @@ interface PropertyLocation {
 interface PropertyImage {
   url?: string
   alt?: string
+  description?: string
 }
 
 interface PropertyProps {
@@ -66,6 +68,21 @@ interface PropertyProps {
 // --- Add Props Interface --- 
 interface RealEstateAgentProps {
     chatbotId: string; // Receive chatbotId from parent page
+}
+
+// --- UI Display Modes ---
+type ActiveDisplayMode = 
+  | 'CHAT' 
+  | 'PROPERTY_LIST' 
+  | 'PROPERTY_DETAILS' 
+  | 'IMAGE_GALLERY' 
+  | 'SCHEDULING_FORM' // For TimePick
+  | 'VERIFICATION_FORM' // For VerificationForm
+  | 'OTP_FORM'; // For OTPInput
+
+interface PropertyGalleryData {
+  propertyName: string
+  images: PropertyImage[]
 }
 
 // --- Agent Component ---
@@ -110,6 +127,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
   const [propertyListData, setPropertyListData] = useState<PropertyProps[] | null>(null);
   const [selectedPropertyDetails, setSelectedPropertyDetails] = useState<PropertyProps | null>(null);
   const [lastAgentTextMessage, setLastAgentTextMessage] = useState<string | null>(null);
+  const [propertyGalleryData, setPropertyGalleryData] = useState<PropertyGalleryData | null>(null); // For gallery
 
   // Add new state for audio context
   const [audioContext, setAudioContext] = useState<AudioContext | null>(null);
@@ -137,6 +155,9 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
 
   // Add state to specifically track if verification is *currently* needed (distinct from showVerificationScreen)
   const [isVerifying, setIsVerifying] = useState<boolean>(false);
+
+  // --- New Centralized UI State ---
+  const [activeDisplayMode, setActiveDisplayMode] = useState<ActiveDisplayMode>('CHAT');
 
   // Helper to generate safe IDs (32 chars max)
   const generateSafeId = () => uuidv4().replace(/-/g, '').slice(0, 32);
@@ -238,18 +259,25 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       addTranscriptMessage, // Use the modified addTranscriptMessage
       updateTranscriptMessage,
       updateTranscriptItemStatus,
+      // Pass setters for new UI control
+      setActiveDisplayMode, 
+      setPropertyListData,
+      setSelectedPropertyDetails,
+      setPropertyGalleryData,
   });
 
   // --- NEW PROPERTY HANDLERS --- 
   const handlePropertySelect = (property: PropertyProps) => {
     console.log(`[UI] Property selected: ${property.name} (${property.id})`);
     setSelectedPropertyDetails(property);
-    setPropertyListData(null); // Hide the list when showing details
+    setActiveDisplayMode('PROPERTY_DETAILS');
+    // setPropertyListData(null); // Keep list data if we want to go "back"
   };
 
   const handleClosePropertyDetails = () => {
     console.log("[UI] Closing property details.");
     setSelectedPropertyDetails(null);
+    setActiveDisplayMode('CHAT'); // Or 'PROPERTY_LIST' if applicable
   };
 
   // Direct method to load all properties using the agent's getProjectDetails function
@@ -307,7 +335,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
             // Use the rest as gallery images
             if (property.images.length > 1) {
               galleryImages = property.images.slice(1).map((img: any) => {
-                return { url: img.url, alt: img.alt || `${property.name} image` };
+                return { url: img.url, alt: img.alt || `${property.name} image`, description: img.description || "" };
               });
             }
           }
@@ -485,7 +513,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
                                 
                                 if (property.images && Array.isArray(property.images) && property.images.length > 0) {
                                     if (property.images[0].url) mainImage = property.images[0].url;
-                                    if (property.images.length > 1) galleryImages = property.images.slice(1).map((img: any) => ({ url: img.url, alt: img.alt || `${property.name} image` }));
+                                    if (property.images.length > 1) galleryImages = property.images.slice(1).map((img: any) => ({ url: img.url, alt: img.alt || `${property.name} image`, description: img.description || "" }));
                                 }
                                 const amenitiesArray = Array.isArray(property.amenities) ? property.amenities.map((amenity: any) => (typeof amenity === 'string' ? { name: amenity } : amenity)) : [];
                                 const unitsArray = Array.isArray(property.units) ? property.units.map((unit: any) => (typeof unit === 'string' ? { type: unit } : unit)) : [];
@@ -558,6 +586,9 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
                         
                         // Always show time slots when we get them
                         setShowTimeSlots(true);
+                        
+                        // CRITICAL FIX: Set the display mode to SCHEDULING_FORM to ensure the UI shows the form
+                        setActiveDisplayMode('SCHEDULING_FORM');
                         
                         // Set verification screen state based on verification status
                         // We'll show this later when the user selects a time
@@ -1486,6 +1517,12 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
     
   }, [sendClientEvent, addTranscriptMessage, generateSafeId]);
 
+  // Add handler for closing gallery - now sets display mode
+  const handleCloseGallery = () => {
+    setPropertyGalleryData(null);
+    setActiveDisplayMode('CHAT'); // Or a more context-aware previous state
+  }
+
   return (
     <div
       className="relative bg-blue-900 rounded-3xl overflow-hidden text-white flex flex-col"
@@ -1640,8 +1677,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
         </div>
       ) : (
         <>
-          {/* Voice Waveform (conditional?) */}
-          {sessionStatus === 'CONNECTED' && !selectedPropertyDetails && (
+          {sessionStatus === 'CONNECTED' && (activeDisplayMode === 'CHAT' || activeDisplayMode === 'IMAGE_GALLERY') && (
              <div className="border-1 h-10 rounded-3xl w-72 p-4 justify-evenly ml-5 my-2 flex-shrink-0">
                <VoiceWaveform
                  mediaStream={audioElementRef.current?.srcObject as MediaStream}
@@ -1650,19 +1686,45 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
              </div>
           )}
 
+          {/* Back button for IMAGE_GALLERY */}
+          {activeDisplayMode === 'IMAGE_GALLERY' && (
+            <button
+              onClick={handleCloseGallery}
+              className="mb-2 ml-4 self-start bg-blue-700 hover:bg-blue-600 text-white font-medium py-2 px-4 rounded-lg flex items-center shadow"
+            >
+              <ArrowLeft size={16} className="mr-2" />
+              Back
+            </button>
+          )}
+
           {/* --- Main Content Area --- */}
-          <div className={`flex-1 overflow-y-auto p-4 scrollbar-thin scrollbar-thumb-blue-700 scrollbar-track-blue-800 ${!propertyListData && !selectedPropertyDetails && transcriptItems.length === 0 && !isVerifying ? 'flex items-center justify-center' : 'space-y-4'}`}>
-            {/* Show Verification Form if currently verifying */}
-            {isVerifying && (
+          <div className={`flex-1 overflow-y-auto p-4 scrollbar-thin scrollbar-thumb-blue-700 scrollbar-track-blue-800 ${activeDisplayMode === 'CHAT' && transcriptItems.length === 0 && !lastAgentTextMessage ? 'flex items-center justify-center' : 'space-y-4'}`}>
+            
+            {activeDisplayMode === 'PROPERTY_LIST' && propertyListData && (
+              <PropertyList 
+                properties={propertyListData}
+                onScheduleVisit={handleScheduleVisit} 
+                onPropertySelect={handlePropertySelect}
+              />
+            )}
+
+            {activeDisplayMode === 'SCHEDULING_FORM' && showTimeSlots && selectedProperty && !isVerifying && (
               <div className="relative w-full">
-                 {/* We need a dedicated verification component here */}
-                 {/* Let's reuse the one from TimePick for now, but ideally it's separate */}
+                <TimePick
+                  schedule={availableSlots}
+                  property={selectedProperty}
+                  onTimeSelect={handleTimeSlotSelection}
+                />
+              </div>
+            )}
+
+            {activeDisplayMode === 'VERIFICATION_FORM' && (
+              <div className="relative w-full">
                  <VerificationForm onSubmit={handleVerificationSubmit} /> 
               </div>
             )}
 
-            {/* Show OTP screen after verification */}
-            {showOtpScreen && (
+            {activeDisplayMode === 'OTP_FORM' && (
               <div className="relative w-full flex justify-center items-center py-4">
                 <div className="w-full max-w-xs">
                   <h3 className="text-lg font-medium text-center mb-4">Enter the verification code</h3>
@@ -1674,99 +1736,76 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
               </div>
             )}
             
-            {/* Show verification success message */}
             {showVerificationSuccess && (
               <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -20 }}
-                className="w-full bg-green-600 text-white rounded-lg p-4 mb-4 flex items-center shadow-lg"
-              >
-                <div className="mr-3 bg-white rounded-full p-1 text-green-600">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="20 6 9 17 4 12"></polyline>
-                  </svg>
-                </div>
-                <div>
-                  <h3 className="font-medium">Verification Successful!</h3>
-                  <p className="text-sm opacity-90">Your identity has been verified.</p>
-                </div>
-              </motion.div>
+                 initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }}
+                 className="w-full bg-green-600 text-white rounded-lg p-4 my-4 flex items-center shadow-lg"
+               >
+                 <div className="mr-3 bg-white rounded-full p-1 text-green-600">
+                   <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                     <polyline points="20 6 9 17 4 12"></polyline>
+                   </svg>
+                 </div>
+                 <div>
+                   <h3 className="font-medium">Verification Successful!</h3>
+                   <p className="text-sm opacity-90">Your identity has been verified.</p>
+                 </div>
+               </motion.div>
             )}
             
-            {/* Show TimePick component ONLY if scheduling AND NOT verifying */}
-            {showTimeSlots && selectedProperty && !isVerifying && (
-              <div className="relative w-full">
-                <TimePick
-                  schedule={availableSlots}
-                  property={selectedProperty}
-                  onTimeSelect={handleTimeSlotSelection} // Pass the callback
-                  // showVerification prop is no longer needed here
-                  // onVerificationSubmit is handled by the separate VerificationForm render
+            {/* इंश्योर PropertyImageGallery is rendered here, inside the main scrollable content div */}
+            {activeDisplayMode === 'IMAGE_GALLERY' && propertyGalleryData && (
+              <div className="w-full"> {/* Wrapper for consistent layout */}
+                <PropertyImageGallery
+                  propertyName={propertyGalleryData.propertyName}
+                  images={propertyGalleryData.images}
+                  onClose={handleCloseGallery} 
                 />
               </div>
             )}
             
-            {/* Show Property List Cards (only if not scheduling/verifying) */ }
-            {propertyListData && !selectedPropertyDetails && !showTimeSlots && !isVerifying && (
-              <PropertyList 
-                properties={propertyListData}
-                onScheduleVisit={handleScheduleVisit}
-                onPropertySelect={handlePropertySelect}
-              />
-            )}
-            
-            {/* Show Agent's Text Message (only if nothing else is shown) */}
-            {lastAgentTextMessage && !propertyListData && !selectedPropertyDetails && !showTimeSlots && !isVerifying && (
-              <div className="w-full mb-4">
-                <p className="text-white text-xl font-medium italic">
-                  {lastAgentTextMessage}
-                </p>
+            {activeDisplayMode === 'CHAT' && (
+              <div className="flex flex-col justify-center items-center h-full text-center px-4">
+                 {/* Display last agent message prominently */} 
+                 {lastAgentTextMessage && (
+                    <p className="text-white text-xl font-medium italic mb-10">
+                      {lastAgentTextMessage}
+                    </p>
+                  )}
+                  {/* Placeholder or initial message if nothing else to show */} 
+                  {!lastAgentTextMessage && transcriptItems.length === 0 && (
+                     <p className="text-white text-xl font-medium italic">How can I help you today?</p>
+                  )}
+                  {/* Removed the .map() rendering chat bubbles */}
               </div>
             )}
             
-            {/* Show User Message (only if nothing else is shown) */ }
-            {!lastAgentTextMessage && !propertyListData && !selectedPropertyDetails && !showTimeSlots && !isVerifying && transcriptItems.length > 0 && transcriptItems.filter(item => item.type === 'MESSAGE' && item.role === 'user').length > 0 && (
-              <>
-              {transcriptItems
-                .filter(item => item.type === 'MESSAGE' && item.role === 'user')
-                .slice(-1)
-                .map(item => (
-                  <div key={item.itemId} className="absolute bottom-20 right-4 max-w-[80%] bg-blue-600 p-3 rounded-xl text-sm text-white rounded-br-none">
-                    {item.text || '[Transcribing...]'}
-                  </div>
-                ))}
-              </>
-            )}
-            
-            {/* Element to scroll to */}
             <div ref={transcriptEndRef} />
           </div>
 
-          {/* Property Details Overlay */} 
-          {selectedPropertyDetails && (
+          {/* User Transcription Overlay (Only in CHAT mode) */}
+          {activeDisplayMode === 'CHAT' && transcriptItems
+            .filter(item => item.type === 'MESSAGE' && item.role === 'user' && item.status !== 'DONE') // Show in-progress or last user message
+            .slice(-1)
+            .map(item => (
+              <div key={item.itemId} className="absolute bottom-20 right-4 max-w-[80%] bg-blue-600 p-3 rounded-xl text-sm text-white rounded-br-none z-20 shadow-lg">
+                {item.text || '[Transcribing...]'}
+              </div>
+        ))}
+
+          {activeDisplayMode === 'PROPERTY_DETAILS' && selectedPropertyDetails && (
               <div className="absolute inset-0 bg-blue-900 bg-opacity-50 backdrop-blur-sm flex items-center justify-center z-10 p-4">
-                  <div className="max-w-sm w-full">
+                 <div className="max-w-sm w-full">
                      <PropertyDetails 
-                         {...selectedPropertyDetails} // Spread properties
-                         onClose={handleClosePropertyDetails} // Pass the defined handler
-                         onScheduleVisit={handleScheduleVisitRequest} // Pass the defined handler
+                         {...selectedPropertyDetails}
+                         onClose={handleClosePropertyDetails}
+                         onScheduleVisit={handleScheduleVisitRequest}
                      />
                   </div>
               </div>
           )}
           
-          {/* Current user message overlay (only if not showing details) */}
-          {!selectedPropertyDetails && transcriptItems
-            .filter(item => item.type === 'MESSAGE' && item.role === 'user' && item.status === 'IN_PROGRESS') // Show only in-progress user transcript
-            .slice(-1)
-            .map(item => (
-              <div key={item.itemId} className="absolute bottom-20 right-4 max-w-[80%] bg-blue-600 p-3 rounded-xl text-sm text-white rounded-br-none z-20">
-                {item.text || '[Transcribing...]'}
-              </div>
-            ))}
-
-          {/* --- Bottom Controls Area --- */}
+          {/* --- Bottom Controls Area */}
           <div className="mt-auto flex-shrink-0 z-20">
             <AnimatePresence>
               {inputVisible && (
@@ -1789,10 +1828,9 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
               )}
             </AnimatePresence>
 
-            {/* Button Bar */} 
+            {/* Button Bar */}
             <div className="flex justify-between items-center p-3 bg-blue-900">
               <button onClick={toggleInput} className="bg-[#47679D] p-3 rounded-full hover:bg-blue-600 transition-colors"> <MessageSquare size={20} /> </button>
-              {/* Placeholder dots */}
               <div className="flex justify-center space-x-1"> {Array(15).fill(0).map((_, i) => (<div key={i} className="w-1 h-1 bg-white rounded-full opacity-50"></div>))} </div>
               <button 
                 onClick={toggleMic} 
@@ -1800,21 +1838,19 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
                 disabled={sessionStatus !== 'CONNECTED'}
                 title={micMuted ? "Mic Off" : "Mic On"}
               > {micMuted ? <MicOff size={20} /> : <Mic size={20} />} </button>
-              {/* Call Button */} 
               <button 
                 onClick={handleCallButtonClick}
                 className={`${sessionStatus === 'CONNECTED' ? 'bg-red-500 hover:bg-red-600' : 'bg-green-500 hover:bg-green-600'} p-3 rounded-full transition-colors disabled:opacity-70`}
                 disabled={sessionStatus === 'CONNECTING' || (!chatbotId && sessionStatus === 'DISCONNECTED')}
               >
-                {sessionStatus === 'CONNECTING' ? <Loader size={18} className="animate-spin"/> : sessionStatus === 'CONNECTED' ? <PhoneOff size={18} /> : <Phone size={18} />} 
+                {sessionStatus === 'CONNECTING' ? <Loader size={18} className="animate-spin"/> : sessionStatus === 'CONNECTED' ? <PhoneOff size={18} /> : <Phone size={18} />}
               </button>
             </div>
           </div>
         </>
       )}
       
-      {/* Hidden Audio Element */} 
       <audio ref={audioElementRef} playsInline />
     </div>
-  )
+  );
 }

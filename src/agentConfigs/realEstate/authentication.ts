@@ -1,91 +1,66 @@
-import { AgentConfig } from "@/types/types"; // Adjusted path
+import { AgentConfig, AgentMetadata } from "@/types/types";
 // import supabaseAdmin from "@/app/lib/supabaseClient"; // Supabase client needs setup in new project
 
 // UUID validation regex
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-const authentication: AgentConfig = {
+// Use the Supabase function URL from the "old" working code
+const supabaseFuncUrl = process.env.NEXT_PUBLIC_SUPABASE_FUNC_URL || "https://dsakezvdiwmoobugchgu.supabase.co/functions/v1/phoneAuth";
+const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY; // This was in the old code's logic
+
+// Function to get instructions based on metadata
+const getAuthInstructions = (metadata: AgentMetadata | undefined | null) => {
+  const language = metadata?.language || "English";
+  const cameFrom = (metadata as any)?.came_from || "the main agent";
+  const customerName = metadata?.customer_name;
+
+  return `You are an authentication assistant. Your primary goal is to verify the user's phone number via OTP.
+
+**Current Status**:
+- Came from: ${cameFrom}
+${customerName ? `- User Name Provided: ${customerName}` : `- User Name: Not yet provided`}
+
+**Strict Flow:**
+1.  ${customerName ? "You already have the user's name." : "**ASK NAME:** If you don't have the user's name yet, ask ONLY for their name first: \"What is your full name, please?\""}
+2.  **WAIT FOR NAME (if asked):** User will reply with their name.
+3.  **ASK PHONE:** Once you have the name (or if you started with it), ask for the phone number: "Thank you, ${customerName || '[User Name]'}. Please provide your phone number, including the country code, so I can send a verification code." (UI will show VERIFICATION_FORM).
+4.  **WAIT FOR PHONE:** User submits phone number via the form. You will call 'submitPhoneNumber'.
+5.  **HANDLE submitPhoneNumber RESULT:**
+    *   If successful (OTP sent), the tool result includes ui_display_hint: 'OTP_FORM' and a message like "I've sent a 6-digit code...". YOUR RESPONSE SHOULD BE EMPTY OR A VERY BRIEF ACKNOWLEDGEMENT like "Okay." The UI will show the OTP form.
+    *   If failed, the tool result includes ui_display_hint: 'VERIFICATION_FORM' or 'CHAT' and an error message. Relay the error message and potentially ask them to re-enter the number.
+6.  **WAIT FOR OTP:** User submits OTP via the form. You will call 'verifyOTP'.
+7.  **HANDLE verifyOTP RESULT:**
+    *   If successful (verified: true), the tool result includes ui_display_hint: 'CHAT', a success message, and destination_agent details. Your response MUST BE EMPTY. The transfer back will happen automatically.
+    *   If failed (verified: false), the tool result includes ui_display_hint: 'OTP_FORM' and an error message. Relay the error message (e.g., "That code doesn't seem right. Please try again.") and the user can re-enter the OTP.
+
+**CRITICAL RULES:**
+- Follow the flow exactly. Do not skip steps.
+- Ask for NAME first, THEN phone number.
+- Rely on the tool results' messages and ui_display_hints to manage the flow.
+- DO NOT generate your own messages when the tool provides one (e.g., after sending OTP or confirming verification).
+- Your response MUST BE EMPTY when verifyOTP succeeds, as the transfer handles the next step.
+- Respond ONLY in ${language}.
+`;
+};
+
+const authenticationAgent: AgentConfig = {
   name: "authentication",
-  publicDescription:
-    "The initial agent that greets and authenticates the user for real estate inquiries. It collects the user's name and phone number, then verifies it through OTP.",
-  instructions: `
-# Authentication Instructions
-
-CONTEXT: You might be called from the main real estate agent OR from the scheduling agent.
-
-# FLOW 1: Called from Real Estate Agent (User needs initial verification)
-- If the user needs initial verification (typically the first time they interact or after 7 questions), you must immediately ask for the user's first name.
-- Say: "Before we proceed further, may I have your name, please?"
-- After receiving the name, ask for the user's phone number in E.164 format (e.g., +1234567890). Explain the format if necessary.
-- After receiving the phone number, call the submitPhoneNumber tool.
-- Then ask the user for the OTP: "Thank you. I've sent a verification code to your phone. Please enter the code when you receive it."
-- When the user provides the OTP, call the verifyOTP tool.
-- If verifyOTP succeeds:
-  * The system will automatically handle what happens next.
-  * DO NOT generate any text response yourself.
-  * DO NOT tell the user you're transferring them back to the real estate agent.
-- If verifyOTP fails:
-  * Inform the user: "Sorry, that code is incorrect. Please try again or request a new code."
-
-# FLOW 2: Called from Scheduling Agent (User needs verification DURING scheduling)
-- If the user is being verified during scheduling (transferred via requestAuthentication tool):
-  * Greet briefly: "Okay, let's get you verified to complete the booking."
-  * Immediately ask for BOTH name and phone number: "Please provide your full name and phone number."
-  * Wait for user to provide details.
-  * Call the submitPhoneNumber tool with the provided name and phone number.
-  * Ask for OTP: "Thank you. Please enter the verification code sent to your phone."
-  * Wait for user to provide OTP.
-  * Call the verifyOTP tool.
-  * If verifyOTP succeeds:
-    * The system will automatically handle what happens next.
-    * DO NOT generate any text response yourself.
-    * DO NOT tell the user you're transferring them back to the scheduling agent.
-  * If verifyOTP fails:
-    * Inform the user: "Sorry, that code is incorrect. Please try again."
-
-# GENERAL TOOL USAGE:
-- submitPhoneNumber: Use after getting name (Flow 1) or name & phone (Flow 2).
-- verifyOTP: Use after the user provides the OTP code.
-- transferToRealEstate: This tool is now DEPRECATED. The transfer happens automatically when verifyOTP succeeds and returns destination_agent: "realEstate". DO NOT CALL THIS TOOL.
-- transferToScheduleMeeting: This tool is now DEPRECATED. The transfer happens automatically when verifyOTP succeeds and returns destination_agent: "scheduleMeeting". DO NOT CALL THIS TOOL.
-
-# CRITICAL RULES:
-- NEVER tell the user you are transferring them to another agent.
-- After successful OTP verification, DO NOT say anything - the system will handle the next steps automatically.
-- If the OTP verification succeeds, DO NOT generate any text response.
-
-# LANGUAGE INSTRUCTIONS
-- The conversation language is set to \${metadata?.language || "English"}. Respond ONLY in \${metadata?.language || "English"}.
-`,
+  publicDescription: "Handles user phone number verification.",
+  instructions: getAuthInstructions(undefined),
   tools: [
     {
       type: "function",
       name: "submitPhoneNumber",
-      description: "Submit the user's phone number for OTP verification",
+      description: "Submits the user's name and phone number to the backend to trigger an OTP code send.",
       parameters: {
         type: "object",
         properties: {
-          name: {
-            type: "string",
-            description: "The user's first name.",
-          },
-          phone_number: {
-            type: "string",
-            description: "The user's phone number in E.164 format (e.g., +1234567890).",
-            pattern: "^\\+\\d{10,15}$",
-          },
-          session_id: {
-            type: "string",
-            description: "The current session ID",
-          },
-          org_id: {
-            type: "string",
-            description: "The organization ID",
-          },
-          chatbot_id: {
-            type: "string",
-            description: "The chatbot ID",
-          }
+          // Matching "old" code parameters
+          name: { type: "string", description: "The user's first name." },
+          phone_number: { type: "string", description: "The user's phone number in E.164 format (e.g., +1234567890).", pattern: "^\\+\\d{10,15}$" },
+          session_id: { type: "string", description: "The current session ID" },
+          org_id: { type: "string", description: "The organization ID" },
+          chatbot_id: { type: "string", description: "The chatbot ID" }
         },
         required: ["name", "phone_number", "session_id", "org_id", "chatbot_id"],
         additionalProperties: false,
@@ -93,58 +68,27 @@ CONTEXT: You might be called from the main real estate agent OR from the schedul
     },
     {
       type: "function",
-      name: "verifyOTP",
+      name: "verifyOTP", // Renamed from submitOtp
       description: "Verify the OTP sent to the user's phone number",
       parameters: {
         type: "object",
         properties: {
-          phone_number: {
-            type: "string",
-            description: "The user's phone number in E.164 format",
-          },
-          otp: {
-            type: "string",
-            description: "The OTP code received by the user",
-          },
-          session_id: {
-            type: "string",
-            description: "The current session ID",
-          },
-          org_id: {
-            type: "string",
-            description: "The organization ID",
-          },
-          chatbot_id: {
-            type: "string",
-            description: "The chatbot ID",
-          }
+          // Matching "old" code parameters
+          phone_number: { type: "string", description: "The user's phone number in E.164 format" },
+          otp: { type: "string", description: "The OTP code received by the user" }, // Renamed from otp_code
+          session_id: { type: "string", description: "The current session ID" },
+          org_id: { type: "string", description: "The organization ID" },
+          chatbot_id: { type: "string", description: "The chatbot ID" }
         },
         required: ["phone_number", "otp", "session_id", "org_id", "chatbot_id"],
         additionalProperties: false,
       },
     },
-    {
-      type: "function",
-      name: "transferToRealEstate",
-      description: "Transfers the conversation back to the real estate agent after successful authentication.",
-      parameters: {
-        type: "object",
-        properties: {
-          destination_agent: {
-            type: "string",
-            description: "The agent to transfer to (realEstate)",
-            enum: ["realEstate"] // Explicitly define destination
-          },
-          // is_verified, customer_name, phone_number are passed implicitly via metadata copy
-        },
-        required: ["destination_agent"],
-        additionalProperties: false,
-      },
-    },
+    // Removed deprecated transferToRealEstate tool
   ],
   toolLogic: {
     submitPhoneNumber: async ({
-      name,
+      name, // Matches old param name
       phone_number,
       session_id,
       org_id,
@@ -156,462 +100,289 @@ CONTEXT: You might be called from the main real estate agent OR from the schedul
       org_id: string;
       chatbot_id: string;
     }) => {
-      // Clear, focused logging of critical metadata
       console.log("=== AUTHENTICATION AGENT METADATA (submitPhoneNumber) ===");
       console.log(`Agent metadata:`, {
-        stored_chatbot_id: authentication.metadata?.chatbot_id || 'undefined',
-        stored_org_id: authentication.metadata?.org_id || 'undefined',
-        stored_session_id: authentication.metadata?.session_id || 'undefined',
-        came_from: authentication.metadata?.came_from || 'undefined'
+        stored_chatbot_id: authenticationAgent.metadata?.chatbot_id || 'undefined',
+        stored_org_id: authenticationAgent.metadata?.org_id || 'undefined',
+        stored_session_id: authenticationAgent.metadata?.session_id || 'undefined',
+        came_from: (authenticationAgent.metadata as any)?.came_from || 'undefined'
       });
-      console.log(`Received args:`, {
-        arg_chatbot_id: chatbot_id,
-        arg_org_id: org_id,
-        arg_session_id: session_id
-      });
+      console.log(`Received args:`, { name, phone_number, session_id, org_id, chatbot_id });
 
-      // Validate phone number format
-      if (!phone_number || phone_number.trim() === "") {
-        console.error("[submitPhoneNumber] Phone number is empty or missing");
-        return { error: "Phone number is required and cannot be empty" };
+      if (!anonKey) {
+        console.error("[submitPhoneNumber] Missing NEXT_PUBLIC_SUPABASE_ANON_KEY.");
+        return { error: "Server configuration error.", ui_display_hint: 'CHAT', message: "Server configuration error." };
+      }
+      if (!name || !name.trim()) {
+        return { error: "Name is required.", ui_display_hint: 'VERIFICATION_FORM', message: "Please provide your name." };
+      }
+      if (!phone_number || !/^\+[1-9]\d{1,14}$/.test(phone_number)) {
+          return { 
+              error: "Invalid phone number format.", 
+              ui_display_hint: 'VERIFICATION_FORM', 
+              message: "Please enter a valid phone number including the country code (e.g., +14155552671)."
+          };
       }
 
-      // Check that phone number starts with + and contains only digits after that
-      if (!phone_number.startsWith("+") || !/^\+\d+$/.test(phone_number)) {
-        console.error("[submitPhoneNumber] Invalid phone number format:", phone_number);
-        return { error: "Phone number must be in E.164 format starting with + followed by country code and number" };
-      }
-
-      // Fix for org_id - prioritize metadata value if available and valid
+      // ID Validation logic from "old" code
       let final_org_id = org_id;
       if (!UUID_REGEX.test(org_id)) {
-        if (authentication.metadata?.org_id && UUID_REGEX.test(authentication.metadata.org_id)) {
-          final_org_id = authentication.metadata.org_id;
-          console.log(`[submitPhoneNumber] Using org_id from metadata: ${final_org_id}`);
+        if (authenticationAgent.metadata?.org_id && UUID_REGEX.test(authenticationAgent.metadata.org_id)) {
+          final_org_id = authenticationAgent.metadata.org_id;
         } else {
-          console.error("[submitPhoneNumber] Invalid org_id format and no valid fallback:", org_id);
-          return { error: "Invalid organization ID format" };
+          return { error: "Invalid organization ID format", ui_display_hint: 'CHAT', message: "Internal error: Invalid organization ID." };
         }
       }
-
-      // Fix for chatbot_id issue
       let final_chatbot_id = chatbot_id;
       if (chatbot_id === "default" || !UUID_REGEX.test(chatbot_id) || chatbot_id === org_id) {
-        console.log("[submitPhoneNumber] Invalid or default chatbot_id detected:", chatbot_id);
-        // Use a fallback UUID or retrieve it from auth agent metadata
-        if (authentication.metadata?.chatbot_id && UUID_REGEX.test(authentication.metadata.chatbot_id)) {
-          final_chatbot_id = authentication.metadata.chatbot_id;
-          console.log("[submitPhoneNumber] Using chatbot_id from agent metadata:", final_chatbot_id);
+        if (authenticationAgent.metadata?.chatbot_id && UUID_REGEX.test(authenticationAgent.metadata.chatbot_id)) {
+          final_chatbot_id = authenticationAgent.metadata.chatbot_id;
         } else {
-          // Use the first fallback UUID - this should be replaced with a valid UUID in production
-          final_chatbot_id = "00000000-0000-0000-0000-000000000000";
-          console.warn("[submitPhoneNumber] Using fallback UUID due to invalid chatbot_id");
+          final_chatbot_id = "00000000-0000-0000-0000-000000000000"; // Fallback, should be valid
         }
+      }
+      let final_session_id = session_id;
+      const isValidUUID = UUID_REGEX.test(session_id) || /^[0-9a-f]{32}$/i.test(session_id);
+      const isSimpleDummyId = session_id.startsWith('session_') || session_id.includes('123') || session_id.length < 16 || !session_id.match(/^[a-zA-Z0-9-_]+$/) || session_id === org_id || session_id === chatbot_id;
+      if (!isValidUUID || isSimpleDummyId) {
+        if (authenticationAgent.metadata?.session_id && authenticationAgent.metadata.session_id.length > 16) {
+          final_session_id = authenticationAgent.metadata.session_id;
+        } else {
+          final_session_id = Date.now().toString(36) + Math.random().toString(36).substring(2, 10);
+          if (authenticationAgent.metadata) authenticationAgent.metadata.session_id = final_session_id;
+        }
+      }
+      // Ensure different IDs
+      if (final_session_id === final_org_id || final_chatbot_id === final_org_id || final_session_id === final_chatbot_id) {
+         // Simplified error, complex recovery might be too risky here
+         console.error("[submitPhoneNumber] CRITICAL ERROR: Detected duplicate IDs.");
+         return { error: "Internal ID conflict.", ui_display_hint: 'CHAT', message: "An internal error occurred. Please try again."};
       }
       
-      // Fix for session_id - prioritize metadata value if available
-      let final_session_id = session_id;
-      // Improved validation to detect dummy/test session IDs
-      const isValidUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(session_id) || 
-                          /^[0-9a-f]{32}$/i.test(session_id);
-      const isSimpleDummyId = session_id.startsWith('session_') || 
-                              session_id.includes('123') ||
-                              session_id.length < 16 ||
-                              !session_id.match(/^[a-zA-Z0-9-_]+$/) ||
-                              session_id === org_id || // Additional check to catch org_id being used as session_id
-                              session_id === chatbot_id; // Additional check to catch chatbot_id being used as session_id
-                              
-      // Always prioritize stored metadata session_id if available
-      if (!isValidUUID || isSimpleDummyId) {
-        if (authentication.metadata?.session_id && authentication.metadata.session_id.length > 16) {
-          final_session_id = authentication.metadata.session_id;
-          console.log(`[submitPhoneNumber] Using session_id from metadata: ${final_session_id}`);
-        } else {
-          // Generate a new session ID if needed - this is better than using a dummy value
-          final_session_id = Date.now().toString(36) + Math.random().toString(36).substring(2, 10);
-          console.log(`[submitPhoneNumber] Generated new session_id: ${final_session_id}`);
-          
-          // Store this new session ID in metadata for future use
-          if (authentication.metadata) {
-            authentication.metadata.session_id = final_session_id;
-          }
-        }
-      } else {
-        console.log(`[submitPhoneNumber] Using provided session_id which appears valid: ${final_session_id}`);
-      }
-
-      // Critical additional check to ensure all three IDs are different
-      if (final_session_id === final_org_id || final_chatbot_id === final_org_id || final_session_id === final_chatbot_id) {
-        console.error("[submitPhoneNumber] CRITICAL ERROR: Detected duplicate IDs in the three key fields");
-        console.log(`[submitPhoneNumber] session_id: ${final_session_id}, org_id: ${final_org_id}, chatbot_id: ${final_chatbot_id}`);
-        
-        // Extra safety check - if any are still duplicated, force use of metadata values
-        if (authentication.metadata) {
-          if (final_session_id === final_org_id && authentication.metadata.session_id) {
-            final_session_id = authentication.metadata.session_id;
-            console.log(`[submitPhoneNumber] Emergency fix: Using metadata session_id: ${final_session_id}`);
-          }
-          
-          if (final_chatbot_id === final_org_id && authentication.metadata.chatbot_id) {
-            final_chatbot_id = authentication.metadata.chatbot_id;
-            console.log(`[submitPhoneNumber] Emergency fix: Using metadata chatbot_id: ${final_chatbot_id}`);
-          }
-          
-          // Last resort - generate new IDs if still duplicated
-          if (final_session_id === final_org_id || final_chatbot_id === final_org_id) {
-            if (final_session_id === final_org_id) {
-              final_session_id = Date.now().toString(36) + Math.random().toString(36).substring(2, 15);
-              console.log(`[submitPhoneNumber] Last resort: Generated new unique session_id: ${final_session_id}`);
-            }
-            
-            if (final_chatbot_id === final_org_id) {
-              // Use stored_chatbot_id from metadata
-              if ((authentication.metadata as any)?.stored_chatbot_id) {
-                final_chatbot_id = (authentication.metadata as any).stored_chatbot_id;
-                console.log(`[submitPhoneNumber] Last resort: Using stored_chatbot_id from metadata: ${final_chatbot_id}`);
-              } else {
-                // Something is really wrong, fallback to hardcoded value
-                final_chatbot_id = "54f1cfb5-c678-42a4-8602-9f21f7764658"; // Known working ID
-                console.log(`[submitPhoneNumber] Last resort: Using hardcoded chatbot_id: ${final_chatbot_id}`);
-              }
-            }
-          }
-        }
-      }
-
-      const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-      if (!anonKey) {
-        console.error("[submitPhoneNumber] Missing NEXT_PUBLIC_SUPABASE_ANON_KEY environment variable.");
-        return { error: "Server configuration error." };
-      }
-
-      console.log("[submitPhoneNumber] Making request with: org_id:", final_org_id, "chatbot_id:", final_chatbot_id, "session_id:", final_session_id);
-
-      // Enhanced logging of the final values after all validations
-      console.log("[submitPhoneNumber] FINAL VALIDATED VALUES:", {
-        session_id: final_session_id,
-        org_id: final_org_id,
-        chatbot_id: final_chatbot_id,
-        phone_number: phone_number,
-        name: name
-      });
+      console.log("[submitPhoneNumber] FINAL VALIDATED VALUES:", { final_session_id, final_org_id, final_chatbot_id, phone_number, name });
 
       const requestBody = {
         session_id: final_session_id,
         phone_number,
         org_id: final_org_id,
         name,
-        platform: "WebChat", 
-        chat_mode: "voice",
+        platform: "WebChat",
+        chat_mode: "voice", // Assuming voice, can be dynamic
         chatbot_id: final_chatbot_id,
       };
 
       try {
-        // Ensure Supabase URL is in environment variables or config
-        const supabaseFuncUrl = process.env.NEXT_PUBLIC_SUPABASE_FUNC_URL || "https://dsakezvdiwmoobugchgu.supabase.co/functions/v1/phoneAuth";
         console.log(`[submitPhoneNumber] Using phoneAuth URL: ${supabaseFuncUrl}`);
-        console.log(`[submitPhoneNumber] Request body: ${JSON.stringify(requestBody)}`);
-        
-        const response = await fetch(
-          supabaseFuncUrl,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "Authorization": `Bearer ${anonKey}`,
-            },
-            body: JSON.stringify(requestBody),
-          }
-        );
-
+        const response = await fetch(supabaseFuncUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${anonKey}` },
+          body: JSON.stringify(requestBody),
+        });
         const data = await response.json();
         console.log("[submitPhoneNumber] PhoneAuth response:", data);
-        console.log("[submitPhoneNumber] Response details - status:", response.status, "success:", data.success);
-        
-        // Expanded debugging to see exact response structure
-        console.log("[submitPhoneNumber] Full response data:", JSON.stringify(data));
 
-        // Update metadata after successful submission
-        if (response.ok && data.success !== false) {
-            if (authentication.metadata) {
-                authentication.metadata.customer_name = name;
-                authentication.metadata.phone_number = phone_number;
-                
-                // Store the successful IDs in our metadata for future calls
-                authentication.metadata.chatbot_id = final_chatbot_id;
-                authentication.metadata.org_id = final_org_id;
-                authentication.metadata.session_id = final_session_id;
-                console.log("[submitPhoneNumber] Updated metadata with valid IDs");
+        if (response.ok && data.success !== false) { // data.success could be true or undefined if not explicitly set to false
+            if (authenticationAgent.metadata) {
+                authenticationAgent.metadata.customer_name = name; // Use 'name' as per old code
+                authenticationAgent.metadata.phone_number = phone_number;
+                authenticationAgent.metadata.chatbot_id = final_chatbot_id;
+                authenticationAgent.metadata.org_id = final_org_id;
+                authenticationAgent.metadata.session_id = final_session_id;
             }
-            return { 
-                success: true, 
-                message: data.message || "OTP sent successfully"
+            return {
+                success: true,
+                message: data.message || "I've sent a 6-digit verification code to your phone. Please enter it below.",
+                ui_display_hint: 'OTP_FORM',
             };
         } else {
-            // OTP send failed
-            const errorMsg = data.error || data.message || "Failed to send OTP";
-            console.error("[submitPhoneNumber] Failed to send OTP:", errorMsg);
-            return { 
-                success: false, 
-                error: errorMsg 
+            const errorMsg = data.error || data.message || "Failed to send OTP.";
+            return {
+                success: false,
+                error: errorMsg,
+                ui_display_hint: 'VERIFICATION_FORM',
+                message: `Error: ${errorMsg}`
             };
         }
-
       } catch (error: any) {
-        console.error("[submitPhoneNumber] Error:", error);
-        return { error: `Failed to submit phone number: ${error.message}` };
+        console.error("[submitPhoneNumber] Exception:", error);
+        return { error: `Exception: ${error.message}`, ui_display_hint: 'VERIFICATION_FORM', message: "An unexpected error occurred." };
       }
     },
-    verifyOTP: async ({
-      session_id,
+
+    verifyOTP: async ({ // Renamed from submitOtp
       phone_number,
-      otp,
+      otp, // Renamed from otp_code
+      session_id,
       org_id,
       chatbot_id,
     }: {
-      session_id: string;
       phone_number: string;
       otp: string;
+      session_id: string;
       org_id: string;
       chatbot_id: string;
     }) => {
-      // Clear, focused logging of critical metadata
-      console.log("=== AUTHENTICATION AGENT METADATA (verifyOTP) ===");
-      console.log(`Agent metadata:`, {
-        stored_chatbot_id: authentication.metadata?.chatbot_id || 'undefined',
-        stored_org_id: authentication.metadata?.org_id || 'undefined',
-        stored_session_id: authentication.metadata?.session_id || 'undefined',
-        came_from: authentication.metadata?.came_from || 'undefined'
-      });
-      console.log(`Received args:`, {
-        arg_chatbot_id: chatbot_id,
-        arg_org_id: org_id,
-        arg_session_id: session_id
-      });
+        console.log("=== AUTHENTICATION AGENT METADATA (verifyOTP) ===");
+        console.log(`Agent metadata:`, {
+            stored_chatbot_id: authenticationAgent.metadata?.chatbot_id || 'undefined',
+            stored_org_id: authenticationAgent.metadata?.org_id || 'undefined',
+            stored_session_id: authenticationAgent.metadata?.session_id || 'undefined',
+            came_from: (authenticationAgent.metadata as any)?.came_from || 'undefined',
+            current_phone: authenticationAgent.metadata?.phone_number || 'undefined',
+            current_name: authenticationAgent.metadata?.customer_name || 'undefined',
+        });
+        console.log(`Received args:`, { phone_number, otp, session_id, org_id, chatbot_id });
 
-      // Validate phone number format
-      if (!phone_number || phone_number.trim() === "") {
-        console.error("[verifyOTP] Phone number is empty or missing");
-        return { error: "Phone number is required and cannot be empty" };
+
+      if (!anonKey) {
+        console.error("[verifyOTP] Missing NEXT_PUBLIC_SUPABASE_ANON_KEY.");
+        return { error: "Server configuration error.", ui_display_hint: 'CHAT', message: "Server configuration error." };
+      }
+      if (!otp || !/^\d{6}$/.test(otp)) { // Check for 6 digits
+           return { 
+               verified: false, // Ensure verified flag is present on failure
+               error: "Invalid OTP format.", 
+               ui_display_hint: 'OTP_FORM', 
+               message: "Please enter the 6-digit code."
+           };
+      }
+       // Use the phone number from metadata if not explicitly passed or different
+      const effective_phone_number = authenticationAgent.metadata?.phone_number || phone_number;
+      if (!effective_phone_number || !/^\+[1-9]\d{1,14}$/.test(effective_phone_number)) {
+          return { 
+              verified: false,
+              error: "Invalid phone number for OTP verification.", 
+              ui_display_hint: 'VERIFICATION_FORM', // Go back to phone form if number is bad
+              message: "There's an issue with the phone number for verification. Please re-enter your phone number."
+          };
       }
 
-      // Check that phone number starts with + and contains only digits after that
-      if (!phone_number.startsWith("+") || !/^\+\d+$/.test(phone_number)) {
-        console.error("[verifyOTP] Invalid phone number format:", phone_number);
-        return { error: "Phone number must be in E.164 format starting with + followed by country code and number" };
-      }
 
-      // Fix for org_id - prioritize metadata value if available and valid
+      // ID Validation logic from "old" code - crucial for correct backend interaction
       let final_org_id = org_id;
       if (!UUID_REGEX.test(org_id)) {
-        if (authentication.metadata?.org_id && UUID_REGEX.test(authentication.metadata.org_id)) {
-          final_org_id = authentication.metadata.org_id;
-          console.log(`[verifyOTP] Using org_id from metadata: ${final_org_id}`);
+        if (authenticationAgent.metadata?.org_id && UUID_REGEX.test(authenticationAgent.metadata.org_id)) {
+          final_org_id = authenticationAgent.metadata.org_id;
         } else {
-          console.error("[verifyOTP] Invalid org_id format and no valid fallback:", org_id);
-          return { error: "Invalid organization ID format" };
+          return { verified: false, error: "Invalid organization ID format", ui_display_hint: 'CHAT', message: "Internal error: Invalid organization ID." };
         }
       }
-
-      // Fix for chatbot_id issue
       let final_chatbot_id = chatbot_id;
       if (chatbot_id === "default" || !UUID_REGEX.test(chatbot_id) || chatbot_id === org_id) {
-        console.log("[verifyOTP] Invalid or default chatbot_id detected:", chatbot_id);
-        // Use a fallback UUID or retrieve it from auth agent metadata
-        if (authentication.metadata?.chatbot_id && UUID_REGEX.test(authentication.metadata.chatbot_id)) {
-          final_chatbot_id = authentication.metadata.chatbot_id;
-          console.log("[verifyOTP] Using chatbot_id from agent metadata:", final_chatbot_id);
+        if (authenticationAgent.metadata?.chatbot_id && UUID_REGEX.test(authenticationAgent.metadata.chatbot_id)) {
+          final_chatbot_id = authenticationAgent.metadata.chatbot_id;
         } else {
-          // Use the first fallback UUID - this should be replaced with a valid UUID in production
-          final_chatbot_id = "00000000-0000-0000-0000-000000000000";
-          console.warn("[verifyOTP] Using fallback UUID due to invalid chatbot_id");
+          final_chatbot_id = "00000000-0000-0000-0000-000000000000"; // Fallback
         }
       }
-      
-      // Fix for session_id - prioritize metadata value if available
       let final_session_id = session_id;
-      // Improved validation to detect dummy/test session IDs
-      const isValidUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(session_id) || 
-                          /^[0-9a-f]{32}$/i.test(session_id);
-      const isSimpleDummyId = session_id.startsWith('session_') || 
-                              session_id.includes('123') ||
-                              session_id.length < 16 ||
-                              !session_id.match(/^[a-zA-Z0-9-_]+$/) ||
-                              session_id === org_id || // Additional check to catch org_id being used as session_id
-                              session_id === chatbot_id; // Additional check to catch chatbot_id being used as session_id
-                              
-      // Always prioritize stored metadata session_id if available
+      const isValidUUID = UUID_REGEX.test(session_id) || /^[0-9a-f]{32}$/i.test(session_id);
+      const isSimpleDummyId = session_id.startsWith('session_') || session_id.includes('123') || session_id.length < 16 || !session_id.match(/^[a-zA-Z0-9-_]+$/) || session_id === org_id || session_id === chatbot_id;
+
       if (!isValidUUID || isSimpleDummyId) {
-        if (authentication.metadata?.session_id && authentication.metadata.session_id.length > 16) {
-          final_session_id = authentication.metadata.session_id;
-          console.log(`[verifyOTP] Using session_id from metadata: ${final_session_id}`);
+        if (authenticationAgent.metadata?.session_id && authenticationAgent.metadata.session_id.length > 16) {
+          final_session_id = authenticationAgent.metadata.session_id;
         } else {
-          // Generate a new session ID if needed - this is better than using a dummy value
-          final_session_id = Date.now().toString(36) + Math.random().toString(36).substring(2, 10);
-          console.log(`[verifyOTP] Generated new session_id: ${final_session_id}`);
-          
-          // Store this new session ID in metadata for future use
-          if (authentication.metadata) {
-            authentication.metadata.session_id = final_session_id;
-          }
+          // If submitPhoneNumber didn't run or failed to set a good session ID, we might have an issue.
+          // For verifyOTP, we *must* use the session ID that submitPhoneNumber used.
+          // If it's bad here, it means submitPhoneNumber likely failed or used a bad one.
+          console.error("[verifyOTP] Potentially bad session_id and no good fallback from metadata. This OTP verification might fail.");
+          // We proceed with the given session_id, but this is a warning sign.
         }
-      } else {
-        console.log(`[verifyOTP] Using provided session_id which appears valid: ${final_session_id}`);
       }
-
-      // Critical additional check to ensure all three IDs are different
+        // Ensure different IDs
       if (final_session_id === final_org_id || final_chatbot_id === final_org_id || final_session_id === final_chatbot_id) {
-        console.error("[verifyOTP] CRITICAL ERROR: Detected duplicate IDs in the three key fields");
-        console.log(`[verifyOTP] session_id: ${final_session_id}, org_id: ${final_org_id}, chatbot_id: ${final_chatbot_id}`);
-        
-        // Extra safety check - if any are still duplicated, force use of metadata values
-        if (authentication.metadata) {
-          if (final_session_id === final_org_id && authentication.metadata.session_id) {
-            final_session_id = authentication.metadata.session_id;
-            console.log(`[verifyOTP] Emergency fix: Using metadata session_id: ${final_session_id}`);
-          }
-          
-          if (final_chatbot_id === final_org_id && authentication.metadata.chatbot_id) {
-            final_chatbot_id = authentication.metadata.chatbot_id;
-            console.log(`[verifyOTP] Emergency fix: Using metadata chatbot_id: ${final_chatbot_id}`);
-          }
-          
-          // Last resort - generate new IDs if still duplicated
-          if (final_session_id === final_org_id || final_chatbot_id === final_org_id) {
-            if (final_session_id === final_org_id) {
-              final_session_id = Date.now().toString(36) + Math.random().toString(36).substring(2, 15);
-              console.log(`[verifyOTP] Last resort: Generated new unique session_id: ${final_session_id}`);
-            }
-            
-            if (final_chatbot_id === final_org_id) {
-              // Use stored_chatbot_id from metadata
-              if ((authentication.metadata as any)?.stored_chatbot_id) {
-                final_chatbot_id = (authentication.metadata as any).stored_chatbot_id;
-                console.log(`[verifyOTP] Last resort: Using stored_chatbot_id from metadata: ${final_chatbot_id}`);
-              } else {
-                // Something is really wrong, fallback to hardcoded value
-                final_chatbot_id = "54f1cfb5-c678-42a4-8602-9f21f7764658"; // Known working ID
-                console.log(`[verifyOTP] Last resort: Using hardcoded chatbot_id: ${final_chatbot_id}`);
-              }
-            }
-          }
-        }
+         console.error("[verifyOTP] CRITICAL ERROR: Detected duplicate IDs.");
+         return { verified: false, error: "Internal ID conflict.", ui_display_hint: 'CHAT', message: "An internal error occurred. Please try again."};
       }
 
-       const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-       if (!anonKey) {
-         console.error("[verifyOTP] Missing NEXT_PUBLIC_SUPABASE_ANON_KEY environment variable.");
-         return { error: "Server configuration error." };
-       }
-
-      console.log("[verifyOTP] Making request with: org_id:", final_org_id, "chatbot_id:", final_chatbot_id, "session_id:", final_session_id);
-
-      // Enhanced logging of the final values after all validations
-      console.log("[verifyOTP] FINAL VALIDATED VALUES:", {
-        session_id: final_session_id,
-        org_id: final_org_id,
-        chatbot_id: final_chatbot_id,
-        phone_number: phone_number,
-        otp: otp
-      });
+      console.log("[verifyOTP] FINAL VALIDATED VALUES:", { final_session_id, final_org_id, final_chatbot_id, effective_phone_number, otp });
 
       const requestBody = {
         session_id: final_session_id,
-        phone_number,
+        phone_number: effective_phone_number,
         org_id: final_org_id,
         otp,
         platform: "WebChat",
-        chat_mode: "voice",
+        chat_mode: "voice", // Assuming voice
         chatbot_id: final_chatbot_id,
       };
 
       try {
-         // Ensure Supabase URL is in environment variables or config
-         const supabaseFuncUrl = process.env.NEXT_PUBLIC_SUPABASE_FUNC_URL || "https://dsakezvdiwmoobugchgu.supabase.co/functions/v1/phoneAuth";
-         console.log(`[verifyOTP] Using phoneAuth URL: ${supabaseFuncUrl}`);
-         console.log(`[verifyOTP] Request body: ${JSON.stringify(requestBody)}`);
-         
-         const response = await fetch(
-           supabaseFuncUrl,
-           {
-             method: "POST",
-             headers: {
-               "Content-Type": "application/json",
-               "Authorization": `Bearer ${anonKey}`,
-             },
-             body: JSON.stringify(requestBody),
-           }
-         );
-
+        console.log(`[verifyOTP] Using phoneAuth URL: ${supabaseFuncUrl}`);
+        const response = await fetch(supabaseFuncUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${anonKey}` },
+          body: JSON.stringify(requestBody),
+        });
         const data = await response.json();
         console.log("[verifyOTP] PhoneAuth response:", data);
-        console.log("[verifyOTP] Response details - status:", response.status, "success:", data.success, "verified:", data.verified);
-        
-        // Expanded debugging to see exact response structure
-        console.log("[verifyOTP] Full response data:", JSON.stringify(data));
 
-        // If OTP verification is successful (server indicates success/verified)
-        // Fix: The edge function may use different properties to indicate success
-        // Check for multiple possible success indicators
-        const isVerified = 
-          (response.ok && data.success === true) || 
+        const isVerifiedByServer =
+          (response.ok && data.success === true) ||
           (response.ok && data.verified === true) ||
           (response.ok && data.status === "success") ||
-          (response.ok && data.success === "true") || // String "true" check
-          (response.ok && data.verified === "true") || // String "true" check
-          (response.ok && data.message && data.message.toLowerCase().includes("verif")); // Message about verification
-          
-        if (isVerified) {
-          console.log("[verifyOTP] OTP verified successfully based on response.");
-          
-          // Determine which agent to transfer back to based on metadata (if available)
-          // Default to realEstate if no specific context
-          const cameFromScheduling = (authentication.metadata as any)?.came_from === 'scheduling';
+          (response.ok && data.success === "true") ||
+          (response.ok && data.verified === "true") ||
+          (response.ok && data.message && data.message.toLowerCase().includes("verif"));
+
+        if (isVerifiedByServer) {
+          console.log("[verifyOTP] OTP verified successfully based on server response.");
+          const cameFromScheduling = (authenticationAgent.metadata as any)?.came_from === 'scheduling' || (authenticationAgent.metadata as any)?.came_from === 'scheduleMeeting';
           const destination = cameFromScheduling ? "scheduleMeeting" : "realEstate";
           console.log(`[verifyOTP] Preparing transfer back to: ${destination}`);
 
-          // Update metadata for the destination agent
-          const updatedMetadata = {
-            is_verified: true,
-            customer_name: data.customer_name || authentication.metadata?.customer_name || "", // Use name from response or previous metadata
-            phone_number: phone_number, // Pass the verified phone number
-            org_id: final_org_id, // Preserve the working org_id
-            chatbot_id: final_chatbot_id, // Preserve the working chatbot_id
-            session_id: final_session_id // Preserve the working session_id
-          };
+          // IMPORTANT: Update agent's own metadata before returning transfer info
+          if (authenticationAgent.metadata) {
+            authenticationAgent.metadata.is_verified = true;
+            // customer_name and phone_number should have been set by submitPhoneNumber or already exist
+          }
 
           return {
-              destination_agent: destination, // Signal to transfer
-              ...updatedMetadata, // Pass updated metadata fields
-              message: "OTP verified successfully." // Internal message
+            verified: true,
+            destination_agent: destination,
+            silentTransfer: true,
+            ui_display_hint: 'CHAT', // Revert UI to chat before transfer
+            message: "Thank you for verifying!", // Agent says this briefly
+            // Data to be merged into the destination agent's metadata:
+            is_verified: true,
+            customer_name: authenticationAgent.metadata?.customer_name || "",
+            phone_number: effective_phone_number, // Pass the verified phone
+            // org_id, chatbot_id, session_id are already part of the metadata copied during transfer
           };
         } else {
-            // OTP verification failed
-            const errorMsg = data.error || data.message || "Invalid OTP or verification failed.";
-            console.error("[verifyOTP] Verification failed:", errorMsg);
-            return { error: errorMsg };
+          const errorMsg = data.error || data.message || "Invalid OTP or verification failed.";
+          console.error("[verifyOTP] Verification failed:", errorMsg);
+          return {
+            verified: false,
+            error: errorMsg,
+            ui_display_hint: 'OTP_FORM', // Stay on OTP form
+            message: `Verification failed: ${errorMsg}`
+          };
         }
-
       } catch (error: any) {
-        console.error("[verifyOTP] Error:", error);
-        return { error: `Failed to verify OTP: ${error.message}` };
+        console.error("[verifyOTP] Exception:", error);
+        return {
+          verified: false,
+          error: `Exception: ${error.message}`,
+          ui_display_hint: 'OTP_FORM',
+          message: "An unexpected error occurred during verification."
+        };
       }
     },
-    // Add mock implementation for trackUserMessage (used by realEstate agent)
-    // This prevents the "Tool logic not found" error if LLM tries to call it
+     // Mock tools from other agents to prevent "tool not found" if LLM miscalls
     trackUserMessage: async ({ message }: { message: string }) => {
       console.log("[Authentication] Received trackUserMessage call (ignoring):", message);
-      // Return success without side effects - this is a no-op in authentication agent
-      return { success: true, message: "Authentication agent acknowledges message" };
+      return { success: true, message: "Authentication agent acknowledges message", ui_display_hint: 'CHAT' };
     },
-    
-    // Add mock implementation for detectPropertyInMessage (used by realEstate agent)
     detectPropertyInMessage: async ({ message }: { message: string }) => {
       console.log("[Authentication] Received detectPropertyInMessage call (ignoring):", message);
-      // Return "no property detected" to avoid confusing the LLM
-      return { propertyDetected: false, message: "Authentication agent does not detect properties" };
-    },
-  },
+      return { propertyDetected: false, message: "Authentication agent does not detect properties", ui_display_hint: 'CHAT' };
+    }
+  }
 };
 
-export default authentication; 
+// Update instructions after defining agent, especially if tool names changed
+authenticationAgent.instructions = getAuthInstructions(authenticationAgent.metadata);
+
+export default authenticationAgent; 

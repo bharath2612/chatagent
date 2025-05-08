@@ -20,6 +20,43 @@ interface PropertyDetectionResult {
   schedulePropertyId?: string | null;
 }
 
+// Define necessary UI prop types locally for mapping
+/*
+interface PropertyLocation {
+  city?: string;
+  mapUrl?: string;
+  coords?: string;
+}
+
+interface PropertyImageForMapping {
+  url?: string;
+  alt?: string;
+  description?: string;
+}
+
+interface PropertyUnitForMapping {
+  type: string;
+}
+
+interface AmenityForMapping {
+  name: string;
+}
+
+interface PropertyProps {
+  id?: string;
+  name?: string;
+  price?: string;
+  area?: string;
+  location?: PropertyLocation;
+  mainImage?: string;
+  galleryImages?: PropertyImageForMapping[];
+  units?: PropertyUnitForMapping[];
+  amenities?: AmenityForMapping[];
+  description?: string;
+  websiteUrl?: string;
+}
+*/
+
 // Required Environment Variables: NEXT_PUBLIC_SUPABASE_ANON_KEY
 // Optional Environment Variables: NEXT_PUBLIC_TOOLS_EDGE_FUNCTION_URL (defaults provided)
 
@@ -57,6 +94,7 @@ const getInstructions = (metadata: AgentMetadata | undefined | null) => {
 
   const projectList = safeMetadata.project_names.length > 0 ? safeMetadata.project_names.join(", ") : "(No projects specified)";
 
+  // Restore instructions closer to the original logic provided, adding UI hint guidance
   return `You are a helpful real estate agent representing ${safeMetadata.org_name}. 
 
 Your company manages the following properties: ${projectList}
@@ -68,38 +106,35 @@ ${safeMetadata.is_verified ? `The user is verified.` : `The user is NOT verified
 ${safeMetadata.has_scheduled ? `The user has already scheduled a property visit.` : ''}
 
 Your responsibilities include:
-1. Answering questions about properties managed by ${safeMetadata.org_name}. When providing a list of properties (e.g., from lookupProperty), keep your text brief and mention that the user can click on the cards shown below for more details.
+1. Answering questions about properties managed by ${safeMetadata.org_name}.
 2. Providing directions to properties using 'calculateRoute'.
 3. Finding nearest places of interest using 'findNearestPlace'.
-4. Tracking user messages using 'trackUserMessage'. If the user is NOT verified, transfer to the 'authentication' agent after 7 questions.
-5. If the user agrees to schedule a visit (after you ask or they request it), use the 'initiateScheduling' tool to start the process.
-6. Updating the internally focused property using 'updateActiveProject' whenever the user asks specifically about one property.
-7. Retrieving property images using 'getPropertyImages' when asked. The UI will display these.
+4. Tracking user messages using 'trackUserMessage'. Transfer to 'authentication' agent if needed.
+5. If the user agrees to schedule a visit, use 'initiateScheduling'.
+6. Updating the internally focused property using 'updateActiveProject'.
+7. Retrieving property images using 'getPropertyImages'.
 
 LANGUAGE INSTRUCTIONS:
-- The conversation language is set to ${safeMetadata.language || "English"}. Respond ONLY in ${safeMetadata.language || "English"}.
-- Keep answers concise, especially when property cards or images are being displayed by the UI based on your tool results. Let the UI show the details.
+- Respond ONLY in ${safeMetadata.language || "English"}.
+- Keep answers concise, especially when property cards (PROPERTY_LIST) or images (IMAGE_GALLERY) are being displayed by the UI based on your tool results. Let the UI show the details.
 
-CRITICAL INSTRUCTIONS: 
-- When the user asks about properties in general (triggering 'lookupProperty'), ALWAYS list ALL available properties (${projectList}) briefly in text and mention the interactive cards.
-- Anytime a user asks SPECIFICALLY about one property (e.g., "tell me about ${safeMetadata.project_names[0] || 'Property A'}"), FIRST call 'detectPropertyInMessage'. If it returns 'shouldUpdateActiveProject: true', THEN call 'updateActiveProject' BEFORE generating your text response.
-- If the user is ALREADY VERIFIED (is_verified is true), NEVER transfer to authentication.
-- ONLY transfer to authentication if is_verified is false AND the question count reaches 7 (indicated by 'trackUserMessage' result).
-- ONLY ask about scheduling a visit if is_verified is true AND has_scheduled is false AND the question count reaches 12 (indicated by 'trackUserMessage' result).
-
-TOOL USAGE:
+TOOL USAGE & UI HINTS:
 - ALWAYS use 'trackUserMessage' at the start of handling ANY user message.
-- ALWAYS use 'detectPropertyInMessage' *after* 'trackUserMessage' to see if the user mentioned a specific property.
+- ALWAYS use 'detectPropertyInMessage' *after* 'trackUserMessage'.
 - Use 'updateActiveProject' ONLY IF 'detectPropertyInMessage' indicates it's needed.
-- Use 'lookupProperty' for general property details or lists. The UI will display results in cards. Your text should be brief.
-- Use 'getProjectDetails' for precise property information from the database when you need guaranteed up-to-date details about a specific property. This is preferred over lookupProperty when the user asks specifically about one property.
-  * IMPORTANT: When using getProjectDetails, ALWAYS use project_id when available in project_id_map rather than project_name.
-- Use 'calculateRoute' for directions.
-- Use 'findNearestPlace' for nearby amenities.
-- Use 'getPropertyImages' if the user asks to see images/pictures. The UI will display them.
-- Use 'initiateScheduling' ONLY when the user confirms they want to schedule a visit.
-  * CRITICAL: If the user message starts EXACTLY with "Yes, I'd like to schedule a visit for...", you MUST call 'initiateScheduling'. Extract the property name from the message to find the corresponding property ID from your metadata (project_id_map) and pass it to the tool if possible, otherwise, the tool will use the active project.
-  * ABSOLUTELY CRITICAL: After calling 'initiateScheduling', YOU MUST NOT generate any text response. Your turn ends immediately after calling this tool. The scheduling agent will take over.
+- **General Property List Request:** When the user asks for a general list (e.g., "show me your properties"), use 'getProjectDetails' without filters. It returns ui_display_hint: 'PROPERTY_LIST'. Your text MUST be brief: "Here are the properties I found. You can click on the cards below for more details."
+- **Specific Property Details Request:** When the user asks about ONE specific property, use 'getProjectDetails' with the project_id/name. It returns ui_display_hint: 'PROPERTY_DETAILS'. Your text message can be slightly more descriptive but still concise.
+- **Lookup Property (Vector Search):** Use 'lookupProperty' for vague or feature-based searches (e.g., "find properties near the park"). It returns ui_display_hint: 'CHAT'. Summarize the findings from the tool's 'search_results' in your text response.
+- **Image Request:** Use 'getPropertyImages'. It returns ui_display_hint: 'IMAGE_GALLERY'. Your text MUST be brief: "Here are the images."
+- **Scheduling:** Use 'initiateScheduling' ONLY when the user confirms. It transfers silently (no ui_display_hint needed from it, handled by the receiving agent).
+- **Other Tools ('calculateRoute', 'findNearestPlace'):** These likely return ui_display_hint: 'CHAT'. Present their results textually.
+
+CRITICAL FLOW RULES: 
+- If the user is ALREADY VERIFIED, NEVER transfer to authentication.
+- ONLY transfer to authentication if is_verified is false AND 'trackUserMessage' indicates it.
+- ONLY ask about scheduling a visit if is_verified is true AND has_scheduled is false AND 'trackUserMessage' indicates it.
+- After calling 'initiateScheduling', YOU MUST NOT generate any text response.
+- **IMPORTANT AGENT TRANSFER RULE:** If ANY tool you call (e.g., 'trackUserMessage', 'initiateScheduling') returns a 'destination_agent' field in its result (signaling an agent transfer), YOU MUST NOT generate any text response yourself. Your turn ends silently, and the system will activate the destination agent.
 `;
 };
 
@@ -312,49 +347,46 @@ const realEstateAgent: AgentConfig = {
 
         // Check if this is a scheduling message by running scheduling regex directly
         const scheduleRegex = /^Yes, I'd like to schedule a visit for (.+?)[.!]?$/i;
-        if (scheduleRegex.test(message)) {
-            console.log("[trackUserMessage] Direct scheduling pattern match detected");
+        const scheduleRequestFromUiButton = message.startsWith("Yes, I'd like to schedule a visit for"); // More generic check for UI button
+
+        if (scheduleRequestFromUiButton) {
+            console.log("[trackUserMessage] Direct scheduling pattern match detected from UI button or similar phrasing");
             
-            // Extract property name
-            const propertyName = message.match(scheduleRegex)?.[1]?.trim();
-            console.log(`[trackUserMessage] Extracted property name: ${propertyName}`);
+            const propertyNameMatch = message.match(scheduleRegex);
+            const propertyName = propertyNameMatch ? propertyNameMatch[1]?.trim() : metadata?.active_project || ((metadata as any)?.project_id_map ? Object.keys((metadata as any).project_id_map)[0] : null);
+
+            console.log(`[trackUserMessage] Extracted/active property name for scheduling: ${propertyName}`);
             
-            // For debugging
             const metadataAny = metadata as any;
-            console.log("[trackUserMessage] Available project_names:", metadata?.project_names);
-            console.log("[trackUserMessage] Current active_project:", metadata?.active_project);
-            console.log("[trackUserMessage] project_id_map:", metadataAny?.project_id_map);
-            
-            // Always use active project if available
-            if (metadataAny?.active_project_id) {
-                console.log(`[trackUserMessage] Using active_project_id: ${metadataAny.active_project_id}`);
-                return {
-                    destination_agent: "scheduleMeeting",
-                    property_id_to_schedule: metadataAny.active_project_id,
-                    silentTransfer: true,
-                    message: null
-                };
+            let propertyIdToSchedule = metadataAny?.active_project_id; // Prefer active project ID
+
+            if (!propertyIdToSchedule && propertyName && metadataAny?.project_id_map) {
+                propertyIdToSchedule = metadataAny.project_id_map[propertyName];
             }
             
-            // If no active project ID but we have project IDs, use the first one
-            if (metadata?.project_ids && metadata.project_ids.length > 0) {
-                console.log(`[trackUserMessage] No active project ID, using first project ID: ${metadata.project_ids[0]}`);
+            // Fallback if no specific ID found yet
+            if (!propertyIdToSchedule && metadata?.project_ids && metadata.project_ids.length > 0) {
+                propertyIdToSchedule = metadata.project_ids[0];
+                console.log(`[trackUserMessage] No specific property ID, falling back to first project ID: ${propertyIdToSchedule}`);
+            }
+
+            if (propertyIdToSchedule) {
+                console.log(`[trackUserMessage] Transferring to scheduleMeeting with property_id_to_schedule: ${propertyIdToSchedule}`);
                 return {
                     destination_agent: "scheduleMeeting",
-                    property_id_to_schedule: metadata.project_ids[0],
+                    property_id_to_schedule: propertyIdToSchedule,
+                    property_name_to_schedule: propertyName, // Pass name for greeting
                     silentTransfer: true,
-                    message: null
+                    message: null // CRITICAL for silent transfer
+                };
+            } else {
+                console.log("[trackUserMessage] No property ID found for scheduling, transferring without specific property, scheduling agent will ask.");
+                return {
+                    destination_agent: "scheduleMeeting",
+                    silentTransfer: true,
+                    message: null // CRITICAL for silent transfer
                 };
             }
-            
-            // If all else fails, try a direct transfer without a specific property ID
-            // The scheduling agent will need to handle this case
-            console.log("[trackUserMessage] No property IDs found, transferring without specific property");
-            return {
-                destination_agent: "scheduleMeeting",
-                silentTransfer: true,
-                message: null
-            };
         }
 
         questionCount++;
@@ -372,8 +404,8 @@ const realEstateAgent: AgentConfig = {
         if (is_verified && !has_scheduled && questionCount >= 12) {
            console.log("[trackUserMessage] Asking user about scheduling visit.");
            // Reset count after asking
-           questionCount = 0;
-           return {
+           questionCount = 0; 
+           return { 
              askToSchedule: true, // Flag for UI to potentially show buttons
              message: "Would you like to schedule a visit to see a property in person?" // LLM will say this
            };
@@ -592,101 +624,46 @@ const realEstateAgent: AgentConfig = {
 
     // --- User Facing Tools --- 
 
-    lookupProperty: async ({ query, k = 3 }: { query: string; k?: number }, transcript: TranscriptItem[] = []) => {
-        console.log(`[lookupProperty] Querying edge function: "${query}", k=${k}`);
-        const metadata = realEstateAgent.metadata;
-        const project_ids = metadata?.project_ids || [];
-
-        if (!supabaseAnonKey) {
-            console.error("[lookupProperty] Missing NEXT_PUBLIC_SUPABASE_ANON_KEY.");
-            return { error: "Server configuration error." };
-        }
-         if (!project_ids.length) {
-             console.warn("[lookupProperty] No project_ids in metadata to filter by.");
-         }
-
-        try {
-            const response = await fetch(
-                toolsEdgeFunctionUrl,
-                {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                        Authorization: `Bearer ${supabaseAnonKey}`,
-                    },
-                    body: JSON.stringify({
-                        action: "lookupProperty",
-                        query,
-                        k,
-                        project_ids,
-                    }),
-                }
-            );
-
-            const result = await response.json();
-
-            if (!response.ok || result.error) {
-                console.error("[lookupProperty] Edge function error:", result.error || response.statusText);
-                return { error: result.error || "Error looking up property." };
-            }
-
-            console.log("[lookupProperty] Received property results:", result);
-            return result;
-
-        } catch (error: any) {
-            console.error("[lookupProperty] Exception calling edge function:", error);
-            return { error: `Exception looking up property: ${error.message}` };
-        }
-    },
-
     getProjectDetails: async ({ project_id, project_name }: { project_id?: string; project_name?: string }, transcript: TranscriptItem[] = []) => {
         console.log(`[getProjectDetails] Fetching project details: project_id=${project_id || 'none'}, project_name=${project_name || 'none'}`);
         
         const metadata = realEstateAgent.metadata;
-        const project_ids = [] as string[];
+        const project_ids_to_fetch = [] as string[];
         
-        // If specific project_id is provided, use it as an array item
         if (project_id) {
-            project_ids.push(project_id);
-            console.log(`[getProjectDetails] Using specific project_id: ${project_id}`);
+            project_ids_to_fetch.push(project_id);
+        } else if (project_name && metadata && (metadata as any).project_id_map && (metadata as any).project_id_map[project_name]) {
+            project_ids_to_fetch.push((metadata as any).project_id_map[project_name]);
+        } else if (project_name && metadata && metadata.active_project === project_name && (metadata as any).active_project_id) {
+            project_ids_to_fetch.push((metadata as any).active_project_id);
+        } else if (metadata?.project_ids && metadata.project_ids.length > 0 && !project_id && !project_name) {
+            // If no specific ID or name, fetch all. This implies a list view.
+            project_ids_to_fetch.push(...metadata.project_ids);
+        } else if (project_name) {
+            // Attempt to fetch by name if ID wasn't found, edge function might handle partial match
+            // This case is ambiguous for UI hint, might need more info or default to list
+            // For now, we let the edge function decide what to return. If it returns one, we show details, else list.
+            // The edge function needs to return a consistent structure. Let's assume it always returns a `properties` array.
         }
-        // If no project_id but project_name matches active project, use active_project_id if available
-        else if (project_name && metadata && metadata.active_project === project_name) {
-            const metadataAny = metadata as any;
-            if (metadataAny.active_project_id) {
-                project_ids.push(metadataAny.active_project_id);
-                console.log(`[getProjectDetails] Using active_project_id: ${metadataAny.active_project_id} for active project: ${project_name}`);
-            }
-        }
-        // If no project_id but project_name is provided, try to get ID from project_id_map
-        else if (project_name && metadata) {
-            const metadataAny = metadata as any;
-            if (metadataAny.project_id_map && metadataAny.project_id_map[project_name]) {
-                project_ids.push(metadataAny.project_id_map[project_name]);
-                console.log(`[getProjectDetails] Found project_id: ${metadataAny.project_id_map[project_name]} for project_name: ${project_name} in project_id_map`);
-            }
-        }
-        // If no specific project specified, use all available project IDs
-        if (project_ids.length === 0 && metadata?.project_ids && metadata.project_ids.length > 0) {
-            project_ids.push(...metadata.project_ids);
-            console.log(`[getProjectDetails] Using all available project_ids: ${project_ids.join(', ')}`);
-        }
-        
-        if (project_ids.length === 0) {
-            console.error("[getProjectDetails] No project IDs available");
-            return { error: "No project IDs available. Please specify a project or check your configuration." };
+
+        if (project_ids_to_fetch.length === 0 && !project_name) {
+            console.error("[getProjectDetails] No project IDs to fetch and no project name provided.");
+            return {
+                error: "No project specified for details.",
+                ui_display_hint: 'CHAT',
+                message: "Please specify which project you'd like details for."
+            };
         }
         
         if (!supabaseAnonKey) {
-            console.error("[getProjectDetails] Missing NEXT_PUBLIC_SUPABASE_ANON_KEY.");
-            return { error: "Server configuration error." };
+            return { error: "Server configuration error.", ui_display_hint: 'CHAT', message: "Server configuration error." };
         }
 
         try {
-            // Build payload with project_ids array to match the new format
             const payload = {
                 action: "getProjectDetails",
-                project_ids: project_ids
+                project_ids: project_ids_to_fetch.length > 0 ? project_ids_to_fetch : undefined,
+                project_name: project_ids_to_fetch.length === 0 ? project_name : undefined,
             };
 
             console.log(`[getProjectDetails] Sending payload: ${JSON.stringify(payload)}`);
@@ -707,16 +684,69 @@ const realEstateAgent: AgentConfig = {
 
             if (!response.ok || result.error) {
                 console.error("[getProjectDetails] Edge function error:", result.error || response.statusText);
-                return { error: result.error || "Error fetching project details." };
+                return { 
+                  error: result.error || "Error fetching project details.",
+                  ui_display_hint: 'CHAT',
+                  message: result.error ? `Failed to get details: ${result.error}` : "Could not fetch project details."
+                };
             }
 
-            console.log("[getProjectDetails] Received project details:", result);
-            
-            return result;
+            console.log("[getProjectDetails] Received raw project details result:", result);
+
+            if (result.properties && Array.isArray(result.properties)) {
+                 if (result.properties.length === 1 && (project_id || (project_ids_to_fetch.length === 1 && !project_name) ) ) {
+                     // Single property detail view
+                     const property = result.properties[0];
+                     const mainImage = property.images && property.images.length > 0 ? property.images[0].url : "/placeholder.svg";
+                     const galleryImages = property.images && property.images.length > 1 ? property.images.slice(1).map((img: any) => ({ url: img.url, alt: img.alt || property.name, description: img.description })) : [];
+                     const amenities = Array.isArray(property.amenities) ? property.amenities.map((amenity: any) => (typeof amenity === 'string' ? { name: amenity } : amenity)) : [];
+
+                     return {
+                         property_details: {
+                            ...property,
+                            mainImage,
+                            galleryImages,
+                            amenities
+                         },
+                         message: result.message || `Here are the details for ${property.name}.`,
+                         ui_display_hint: 'PROPERTY_DETAILS',
+                     };
+                 } else if (result.properties.length > 0) {
+                     // Multiple properties list view
+                     const processedProperties = result.properties.map((property: any) => {
+                        const mainImage = property.images && property.images.length > 0 ? property.images[0].url : "/placeholder.svg";
+                        const galleryImages = property.images && property.images.length > 1 ? property.images.slice(1).map((img: any) => ({ url: img.url, alt: img.alt || property.name, description: img.description })) : [];
+                        const amenities = Array.isArray(property.amenities) ? property.amenities.map((amenity: any) => (typeof amenity === 'string' ? { name: amenity } : amenity)) : [];
+                        return {
+                            ...property,
+                            mainImage,
+                            galleryImages,
+                            amenities
+                        };
+                     });
+                     return {
+                         properties: processedProperties,
+                         message: "Here are the properties I found. You can click on the cards below for more details.",
+                         ui_display_hint: 'PROPERTY_LIST',
+                     };
+                 } else {
+                      return { message: result.message || "I couldn't find any project details.", ui_display_hint: 'CHAT' };
+                 }
+             } else {
+                 return { 
+                    error: "Unexpected response structure from server.",
+                    message: "I received an unexpected response while fetching details.",
+                    ui_display_hint: 'CHAT',
+                 };
+             }
 
         } catch (error: any) {
             console.error("[getProjectDetails] Exception calling edge function:", error);
-            return { error: `Exception fetching project details: ${error.message}` };
+            return { 
+              error: `Exception fetching project details: ${error.message}`,
+              ui_display_hint: 'CHAT',
+              message: "An error occurred while fetching project details."
+            };
         }
     },
 
@@ -725,10 +755,23 @@ const realEstateAgent: AgentConfig = {
         const metadata = realEstateAgent.metadata;
         const project_ids = metadata?.project_ids || [];
         const active_project = metadata?.active_project || "N/A";
+        const targetPropertyForName = property_name || active_project;
 
         if (!supabaseAnonKey) {
             console.error("[getPropertyImages] Missing NEXT_PUBLIC_SUPABASE_ANON_KEY.");
-            return { error: "Server configuration error." };
+            return { 
+              error: "Server configuration error.", 
+              ui_display_hint: 'CHAT', // Revert to chat on error
+              message: "Sorry, I couldn't fetch images due to a server configuration issue."
+            };
+        }
+
+        if (targetPropertyForName === "N/A") {
+            return {
+                error: "No property specified or active.",
+                ui_display_hint: 'CHAT',
+                message: "Please specify which property's images you'd like to see."
+            };
         }
 
         try {
@@ -742,7 +785,7 @@ const realEstateAgent: AgentConfig = {
                     },
                     body: JSON.stringify({
                         action: "getPropertyImages",
-                        property_name: property_name || active_project,
+                        property_name: targetPropertyForName, // Use the determined name
                         query,
                         project_ids,
                     }),
@@ -753,15 +796,42 @@ const realEstateAgent: AgentConfig = {
 
             if (!response.ok || result.error) {
                 console.error("[getPropertyImages] Edge function error:", result.error || response.statusText);
-                return { error: result.error || "Error fetching property images." };
+                return { 
+                  error: result.error || "Error fetching property images.",
+                  ui_display_hint: 'CHAT',
+                  message: result.error ? `Sorry, I couldn't fetch images: ${result.error}` : "Sorry, an error occurred while fetching images."
+                };
             }
 
-            console.log("[getPropertyImages] Received property images:", result);
-            return result;
+            console.log("[getPropertyImages] Received property images result:", result);
+
+            if (result.images && result.images.length > 0) {
+              return {
+                  property_name: result.property_name || targetPropertyForName,
+                  images: result.images,
+                  message: "Here are the images you requested.",
+                  ui_display_hint: 'IMAGE_GALLERY',
+                  images_data: {
+                      propertyName: result.property_name || targetPropertyForName,
+                      images: result.images.map((img: any) => ({ url: img.image_url || img.url, alt: img.description || img.alt, description: img.description }))
+                  }
+              };
+            } else {
+              return {
+                property_name: result.property_name || targetPropertyForName,
+                images: [],
+                message: result.message || `I couldn't find any images for ${result.property_name || targetPropertyForName}.`,
+                ui_display_hint: 'CHAT'
+              };
+            }
 
         } catch (error: any) {
             console.error("[getPropertyImages] Exception calling edge function:", error);
-            return { error: `Exception fetching property images: ${error.message}` };
+            return { 
+              error: `Exception fetching property images: ${error.message}`,
+              ui_display_hint: 'CHAT',
+              message: "Sorry, an unexpected error occurred while trying to fetch images."
+            };
         }
     },
 
@@ -792,7 +862,7 @@ const realEstateAgent: AgentConfig = {
         // If we still don't have a property ID, proceed anyway and let the scheduling agent handle it
         if (!targetPropertyId) {
             console.log("[initiateScheduling] No property ID available, proceeding with transfer anyway");
-        } else {
+            } else {
             console.log(`[initiateScheduling] Transferring to scheduleMeeting agent for property ID: ${targetPropertyId}`);
         }
         
@@ -803,7 +873,90 @@ const realEstateAgent: AgentConfig = {
             message: null // Setting this to null ensures the agent doesn't say anything
         };
     },
+
+    lookupProperty: async ({ query, k = 3 }: { query: string; k?: number }, transcript: TranscriptItem[] = []) => {
+        console.log(`[lookupProperty] Querying edge function: "${query}", k=${k}`);
+        const metadata = realEstateAgent.metadata;
+        const project_ids_for_filter = metadata?.project_ids || []; // For filtering in vector search
+
+        if (!supabaseAnonKey) {
+            return { error: "Server configuration error.", ui_display_hint: 'CHAT', message: "Server error during lookup." };
+        }
+
+        try {
+            const response = await fetch(
+                toolsEdgeFunctionUrl,
+                {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        Authorization: `Bearer ${supabaseAnonKey}`,
+                    },
+                    body: JSON.stringify({
+                        action: "lookupProperty",
+                        query,
+                        k,
+                        project_ids: project_ids_for_filter, // Pass current project_ids for context/filtering
+                    }),
+                }
+            );
+
+            const result = await response.json();
+
+            if (!response.ok || result.error) {
+                console.error("[lookupProperty] Edge function error:", result.error || response.statusText);
+                return {
+                  error: result.error || "Error looking up property.",
+                  ui_display_hint: 'CHAT',
+                  message: result.error ? `Lookup failed: ${result.error}` : "Could not find properties."
+                };
+            }
+
+            console.log("[lookupProperty] Received raw property results:", result);
+
+            if (result.properties && Array.isArray(result.properties) && result.properties.length > 0) {
+                // Keep CHAT hint, provide results for agent summary
+                return {
+                    search_results: result.properties, 
+                    message: result.message || `Regarding "${query}", I found information about ${result.properties.length} item(s).`,
+                    ui_display_hint: 'CHAT',
+                };
+            } else {
+                 return { message: result.message || "I couldn't find specific details matching that query.", ui_display_hint: 'CHAT' };
+            }
+
+        } catch (error: any) {
+            console.error("[lookupProperty] Exception calling edge function:", error);
+            return { 
+              error: `Exception looking up property: ${error.message}`,
+              ui_display_hint: 'CHAT',
+              message: "An error occurred during property lookup."
+            };
+        }
+    },
+
+    calculateRoute: async (args: any) => {
+        // ... fetch route from Google Maps API ...
+        // Assuming result is stored in routeSummary
+        return {
+            routeSummary: "Driving directions: ...", // The actual summary
+            ui_display_hint: 'CHAT', // <<< Display result in chat
+            message: "Here are the driving directions:" // Agent's intro text
+        };
+    },
+    findNearestPlace: async (args: any) => {
+        // ... fetch nearest place from Google Maps API ...
+        // Assuming result is stored in placeInfo
+        return {
+            placeInfo: "The nearest park is Central Park, 0.5 miles away.", // The actual result
+            ui_display_hint: 'CHAT', // <<< Display result in chat
+            message: "Regarding the nearest place:" // Agent's intro text
+        };
+    }
   },
 };
 
-export default realEstateAgent;
+// Re-apply instructions after definition
+realEstateAgent.instructions = getInstructions(realEstateAgent.metadata);
+
+export default realEstateAgent; 

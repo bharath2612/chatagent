@@ -39,13 +39,6 @@ const ImageCarousel: React.FC<ImageCarouselProps> = ({ images = [], initialIndex
     return () => window.removeEventListener("keydown", handleKeyDown)
   }, [nextImage, prevImage, onClose])
 
-  useEffect(() => {
-    document.body.style.overflow = "hidden"
-    return () => {
-      document.body.style.overflow = "auto"
-    }
-  }, [])
-
   const handleImageError = (imageUrl: string | undefined, e: React.SyntheticEvent<HTMLImageElement>) => {
     // Only log once and update if not already marked as failed
     if (imageUrl && !failedImages.current.has(imageUrl)) {
@@ -67,59 +60,51 @@ const ImageCarousel: React.FC<ImageCarouselProps> = ({ images = [], initialIndex
   }
 
   return (
-    <div className="flex items-center justify-center bg-black/50">
-      <div className="flex items-center justify-center">
-        <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
-
-        <button
-          onClick={onClose}
-          className="absolute top-4 left-4 z-10 p-2 rounded-full bg-black/50 text-white hover:bg-black/70 transition-colors"
-        >
-          <X className="h-6 w-6" />
-        </button>
-
+    <div className="relative w-full h-full rounded-lg overflow-hidden bg-blue-950 flex flex-col">
+      {/* Main image container */}
+      <div className="relative flex-1 flex items-center justify-center">
+        <img
+          src={getImageSrc(images[currentIndex] || {})}
+          alt={images[currentIndex]?.alt || `Carousel Image ${currentIndex + 1}`}
+          className="max-w-full max-h-full object-contain"
+          onError={(e) => handleImageError(images[currentIndex]?.url, e)}
+        />
+        
+        {/* Navigation arrows */}
         <button
           onClick={prevImage}
-          className="absolute left-4 top-1/2 transform -translate-y-1/2 bg-black/50 text-white p-2 rounded-full z-10 hover:bg-black/70 transition-colors"
+          className="absolute left-2 bg-black/50 text-white p-1 rounded-full z-10 hover:bg-black/70 transition-colors"
         >
-          <ChevronLeft className="h-6 w-6" />
+          <ChevronLeft className="h-5 w-5" />
         </button>
 
         <button
           onClick={nextImage}
-          className="absolute right-4 top-1/2 transform -translate-y-1/2 bg-black/50 text-white p-2 rounded-full z-10 hover:bg-black/70 transition-colors"
+          className="absolute right-2 bg-black/50 text-white p-1 rounded-full z-10 hover:bg-black/70 transition-colors"
         >
-          <ChevronRight className="h-6 w-6" />
+          <ChevronRight className="h-5 w-5" />
         </button>
+      </div>
 
-        <div className="absolute top-2/8">
-            <img
-              src={getImageSrc(images[currentIndex] || {})}
-              alt={images[currentIndex]?.alt || `Carousel Image ${currentIndex + 1}`}
-              className=" "
-              onError={(e) => handleImageError(images[currentIndex]?.url, e)}
-            />
-          </div>
-
-        <div className="absolute bottom-2 left-0 right-0 flex justify-center gap-2 px-2">
-          <div className="flex gap-1 p-1 bg-black/50 rounded-lg overflow-x-auto max-w-[80vw]">
-            {images.map((image, index) => (
-              <button
-                key={index}
-                onClick={() => setCurrentIndex(index)}
-                className={`relative h-16 w-16 flex-shrink-0 border-2 transition-all ${
-                  currentIndex === index ? "border-white" : "border-transparent opacity-70"
-                }`}
-              >
-                <img
-                  src={getImageSrc(image)}
-                  alt={image.alt || `Thumbnail ${index + 1}`}
-                  className="absolute inset-0 object-cover"
-                  onError={(e) => handleImageError(image.url, e)}
-                />
-              </button>
-            ))}
-          </div>
+      {/* Thumbnails */}
+      <div className="p-2 bg-blue-950">
+        <div className="flex gap-1 overflow-x-auto py-1 scrollbar-thin scrollbar-thumb-blue-700">
+          {images.map((image, index) => (
+            <button
+              key={index}
+              onClick={() => setCurrentIndex(index)}
+              className={`relative h-12 w-12 flex-shrink-0 border-2 transition-all ${
+                currentIndex === index ? "border-white" : "border-transparent opacity-70"
+              }`}
+            >
+              <img
+                src={getImageSrc(image)}
+                alt={image.alt || `Thumbnail ${index + 1}`}
+                className="h-full w-full object-cover"
+                onError={(e) => handleImageError(image.url, e)}
+              />
+            </button>
+          ))}
         </div>
       </div>
     </div>
