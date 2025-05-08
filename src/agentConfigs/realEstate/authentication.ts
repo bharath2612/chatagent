@@ -310,12 +310,14 @@ const authenticationAgent: AgentConfig = {
 
       try {
         console.log(`[verifyOTP] Using phoneAuth URL: ${supabaseFuncUrl}`);
+        console.log("[verifyOTP] Sending OTP verification request:", requestBody); // Added log
         const response = await fetch(supabaseFuncUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json", "Authorization": `Bearer ${anonKey}` },
           body: JSON.stringify(requestBody),
         });
         const data = await response.json();
+        console.log("[verifyOTP] Raw PhoneAuth VERIFY response status:", response.status, "ok:", response.ok); // Added log
         console.log("[verifyOTP] PhoneAuth response:", data);
 
         const isVerifiedByServer =
@@ -325,11 +327,11 @@ const authenticationAgent: AgentConfig = {
           (response.ok && data.success === "true") ||
           (response.ok && data.verified === "true") ||
           (response.ok && data.message && data.message.toLowerCase().includes("verif"));
+        console.log("[verifyOTP] Server verification result (isVerifiedByServer):", isVerifiedByServer); // Added log
 
         if (isVerifiedByServer) {
           console.log("[verifyOTP] OTP verified successfully based on server response.");
-          const cameFromScheduling = (authenticationAgent.metadata as any)?.came_from === 'scheduling' || (authenticationAgent.metadata as any)?.came_from === 'scheduleMeeting';
-          const destination = cameFromScheduling ? "scheduleMeeting" : "realEstate";
+          const destination = "realEstate"; // Changed to always go to realEstate
           console.log(`[verifyOTP] Preparing transfer back to: ${destination}`);
 
           // IMPORTANT: Update agent's own metadata before returning transfer info

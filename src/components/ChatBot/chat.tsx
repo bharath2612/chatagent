@@ -1282,9 +1282,10 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
         // Trigger a welcome back message from the realEstate agent
         setTimeout(() => {
           if (canCreateResponse()) {
-            const welcomeMsg = "Thank you for verifying your identity. How can I help you with properties today?";
-            const systemId = generateSafeId();
-            addTranscriptMessage(systemId, 'assistant', welcomeMsg);
+            // const welcomeMsg = "Thank you for verifying your identity. How can I help you with properties today?";
+            // Make the message very distinct to check if this update is visible
+            const welcomeMsg = `REAL ESTATE AGENT ACTIVE (Verified ${new Date().toLocaleTimeString()})! How can I help?`;
+            addTranscriptMessage(generateSafeId(), 'assistant', welcomeMsg);
             
             // Trigger the agent to generate a proper response
             sendClientEvent({ type: "response.create" }, "(trigger response after verification)");
