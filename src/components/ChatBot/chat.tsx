@@ -159,6 +159,9 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
   // --- New Centralized UI State ---
   const [activeDisplayMode, setActiveDisplayMode] = useState<ActiveDisplayMode>('CHAT');
 
+  // Add state to track when properties are being loaded
+  const [isLoadingProperties, setIsLoadingProperties] = useState<boolean>(false);
+
   // Helper to generate safe IDs (32 chars max)
   const generateSafeId = () => uuidv4().replace(/-/g, '').slice(0, 32);
 
@@ -285,8 +288,8 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
     console.log("[UI] Attempting to load all properties directly");
     
     // Prevent multiple simultaneous calls
-    if (propertyListData) {
-      console.log("[UI] Properties already loaded, skipping request");
+    if (propertyListData || isLoadingProperties) {
+      console.log("[UI] Properties already loaded or loading in progress, skipping request");
       return;
     }
     
@@ -312,6 +315,9 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
     }
     
     try {
+      // Set loading flag to prevent duplicate calls
+      setIsLoadingProperties(true);
+
       // Show loading message
       addTranscriptMessage(generateSafeId(), 'system', 'Loading properties...');
       
@@ -402,8 +408,11 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
         'system', 
         'An error occurred while loading properties. Please try again later.'
       );
+    } finally {
+      // Always clear the loading flag, even on error
+      setIsLoadingProperties(false);
     }
-  }, [selectedAgentConfigSet, agentMetadata, addTranscriptMessage, generateSafeId, propertyListData]);
+  }, [selectedAgentConfigSet, agentMetadata, addTranscriptMessage, generateSafeId, propertyListData, isLoadingProperties]);
 
   // Fix the stopCurrentResponse function to check if a response is active first
   const stopCurrentResponse = useCallback((sendClientEvent: (eventObj: any, eventNameSuffix?: string) => void) => {
@@ -484,6 +493,11 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
 
     let assistantMessageHandledLocally = false; 
     let propertiesHandledLocally = false;
+    
+    // Access the loading state to avoid duplicate property loading
+    if (isLoadingProperties) {
+      console.log("[handleServerEvent] Properties are already being loaded, skipping duplicate loading");
+    }
 
     // --- Handle Function Call Output --- 
     if (
@@ -496,14 +510,17 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
         // Handle getProjectDetails
         if (functionName === "getProjectDetails") {
             console.log("[handleServerEvent] Detected function_call_output item for getProjectDetails.");
-            // Only process if propertyListData is currently null
-            if (!propertyListData) {
+            // Only process if propertyListData is currently null AND we're not already loading properties
+            if (!propertyListData && !isLoadingProperties) {
                 const outputString = functionOutputItem?.output;
                 const itemId = functionOutputItem?.id;
                 if (outputString) {
                     try {
                         const outputData = JSON.parse(outputString);
                         if (outputData.properties && Array.isArray(outputData.properties)) {
+                            // First set loading flag to prevent duplicate calls  
+                            setIsLoadingProperties(true);
+                            
                             // Process properties (map to PropertyProps) - Copy existing mapping logic here
                             const formattedProperties = outputData.properties.map((property: any) => {
                                 // Edge function returns data in a different format than our components expect
@@ -540,17 +557,22 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
                             addTranscriptMessage(newItemId, 'assistant', messageText, formattedProperties); // Add message AFTER setting state
                             updateTranscriptItemStatus(newItemId, 'DONE');
                             propertiesHandledLocally = true;
+                            
+                            // Clear loading flag after processing
+                            setIsLoadingProperties(false);
                         } else {
                             console.log("[handleServerEvent] Parsed function output, but 'properties' array not found or not an array.");
                         }
                     } catch (e) {
                         console.warn("[handleServerEvent] Error parsing getProjectDetails output:", e, outputString);
+                        // Clear loading flag in case of error
+                        setIsLoadingProperties(false);
                     }
                 } else {
                     console.log("[handleServerEvent] getProjectDetails function_call_output item has no output string.");
                 }
             } else {
-                console.log("[handleServerEvent] propertyListData already exists, skipping processing for getProjectDetails output.");
+                console.log("[handleServerEvent] propertyListData already exists or properties are being loaded, skipping processing for getProjectDetails output.");
                 propertiesHandledLocally = true; // Mark as handled to prevent hook processing
             }
         } else if (functionName === "getAvailableSlots") {
@@ -664,7 +686,9 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       updateTranscriptItemStatus, 
       handleServerEventRefFromHook,
       generateSafeId,
-      propertyListData
+      propertyListData,
+      isLoadingProperties, // Add new dependency
+      setIsLoadingProperties // Add setter to dependencies
     ]);
 
   // Ref part remains the same
@@ -1163,73 +1187,12 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
        }
    }, [transcriptItems, lastAgentTextMessage, propertyListData, selectedPropertyDetails]); // Scroll when relevant content changes
 
-  // Effect to monitor transcript for property-related queries
-  useEffect(() => {
-    // Only run if connected and there are transcript items but no properties loaded yet
-    if (
-      sessionStatus === 'CONNECTED' &&
-      !propertyListData &&
-      !selectedPropertyDetails &&
-      initialSessionSetupDoneRef.current // Only after initial setup is complete
-    ) {
-      // Get the last user message - still need transcriptItems here!
-      // Re-thinking: Removing transcriptItems dependency was wrong if we check the last message.
-      // The core issue is re-triggering handleGetAllProperties which adds a message.
-      // Let's keep transcriptItems dependency BUT prevent the loop inside.
-      if (transcriptItems.length === 0) return; // Don't run if no transcript yet
-
-      // Get the last user message
-      const lastUserMessage = [...transcriptItems]
-        .filter(item => item.type === 'MESSAGE' && item.role === 'user')
-        .pop();
-      
-      if (lastUserMessage?.text) {
-        const text = lastUserMessage.text.toLowerCase();
-        
-        // Add a check to see if the last message was already processed by this effect
-        // This requires storing the ID of the last processed message.
-        // For now, a simpler check: Is the *very last* item in the transcript
-        // one of the messages added BY handleGetAllProperties?
-        const veryLastItem = transcriptItems[transcriptItems.length - 1];
-        const isLoadingMessage = veryLastItem?.role === 'system' && veryLastItem?.text === 'Loading properties...';
-        const isResultsMessage = veryLastItem?.role === 'assistant' && veryLastItem?.text?.includes('properties I found');
-        const isErrorMessage = veryLastItem?.role === 'system' && veryLastItem?.text?.startsWith('Error loading properties');
-
-        if (isLoadingMessage || isResultsMessage || isErrorMessage) {
-           console.log("[Effect Check] Skipping keyword check as last message seems related to property loading.");
-           return; // Don't re-run if the last message is from the loading process
-        }
-        
-        // Check if it contains property-related keywords
-        const propertyRelatedKeywords = [
-          'property', 'properties', 'house', 'home', 'apartment', 'flat', 
-          'real estate', 'housing', 'buy', 'purchase', 'rent', 'view', 'show me'
-        ];
-        
-        const containsPropertyKeyword = propertyRelatedKeywords.some(keyword => 
-          text.includes(keyword.toLowerCase())
-        );
-        
-        if (containsPropertyKeyword) {
-          console.log("[Effect] Detected property-related query in user message:", text);
-          // Load properties automatically when user asks about them
-          handleGetAllProperties();
-        }
-      }
-    }
-  }, [
-    transcriptItems, 
-    sessionStatus, 
-    propertyListData, 
-    selectedPropertyDetails, 
-    handleGetAllProperties, // handleGetAllProperties itself should be stable due to useCallback
-    initialSessionSetupDoneRef // initialSessionSetupDoneRef should be stable
-  ]);
-
   // Track the previous agent name for transition detection
   const prevAgentNameRef = useRef<string | null>(null);
   // Add a ref to track if we've already shown the verification success message
   const hasShownSuccessMessageRef = useRef<boolean>(false);
+  // Add a ref to track the last property query message to avoid repeated processing
+  const lastPropertyQueryRef = useRef<string | null>(null);
 
   // Add useEffect to monitor agent changes and display the scheduling UI
   useEffect(() => {
@@ -1522,6 +1485,79 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
     setPropertyGalleryData(null);
     setActiveDisplayMode('CHAT'); // Or a more context-aware previous state
   }
+
+  // Effect to monitor transcript for property-related queries
+  useEffect(() => {
+    // Only run if connected and there are transcript items but no properties loaded yet
+    if (
+      sessionStatus === 'CONNECTED' &&
+      !propertyListData &&
+      !selectedPropertyDetails &&
+      !isLoadingProperties &&  // Add check for loading state to prevent duplicate calls
+      initialSessionSetupDoneRef.current // Only after initial setup is complete
+    ) {
+      // Get the last user message - still need transcriptItems here!
+      // Re-thinking: Removing transcriptItems dependency was wrong if we check the last message.
+      // The core issue is re-triggering handleGetAllProperties which adds a message.
+      // Let's keep transcriptItems dependency BUT prevent the loop inside.
+      if (transcriptItems.length === 0) return; // Don't run if no transcript yet
+
+      // Get the last user message
+      const lastUserMessage = [...transcriptItems]
+        .filter(item => item.type === 'MESSAGE' && item.role === 'user')
+        .pop();
+      
+      if (lastUserMessage?.text) {
+        const text = lastUserMessage.text.toLowerCase();
+        
+        // Skip if we've already processed this exact message
+        if (lastPropertyQueryRef.current === lastUserMessage.itemId) {
+          console.log("[Effect] Skipping already processed message:", text);
+          return;
+        }
+        
+        // Add a check to see if the last message was already processed by this effect
+        // This requires storing the ID of the last processed message.
+        // For now, a simpler check: Is the *very last* item in the transcript
+        // one of the messages added BY handleGetAllProperties?
+        const veryLastItem = transcriptItems[transcriptItems.length - 1];
+        const isLoadingMessage = veryLastItem?.role === 'system' && veryLastItem?.text === 'Loading properties...';
+        const isResultsMessage = veryLastItem?.role === 'assistant' && veryLastItem?.text?.includes('properties I found');
+        const isErrorMessage = veryLastItem?.role === 'system' && veryLastItem?.text?.startsWith('Error loading properties');
+
+        if (isLoadingMessage || isResultsMessage || isErrorMessage) {
+           console.log("[Effect Check] Skipping keyword check as last message seems related to property loading.");
+           return; // Don't re-run if the last message is from the loading process
+        }
+        
+        // Check if it contains property-related keywords
+        const propertyRelatedKeywords = [
+          'property', 'properties', 'house', 'home', 'apartment', 'flat', 
+          'real estate', 'housing', 'buy', 'purchase', 'rent', 'view', 'show me'
+        ];
+        
+        const containsPropertyKeyword = propertyRelatedKeywords.some(keyword => 
+          text.includes(keyword.toLowerCase())
+        );
+        
+        if (containsPropertyKeyword) {
+          console.log("[Effect] Detected property-related query in user message:", text);
+          // Store this message's ID to avoid reprocessing
+          lastPropertyQueryRef.current = lastUserMessage.itemId;
+          // Load properties automatically when user asks about them
+          handleGetAllProperties();
+        }
+      }
+    }
+  }, [
+    transcriptItems, 
+    sessionStatus, 
+    propertyListData, 
+    selectedPropertyDetails,
+    isLoadingProperties, 
+    handleGetAllProperties,
+    initialSessionSetupDoneRef
+  ]);
 
   return (
     <div

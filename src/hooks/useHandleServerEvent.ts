@@ -482,7 +482,7 @@ export function useHandleServerEvent({
 
 
   const handleServerEvent = (serverEvent: ServerEvent) => {
-     console.log("[Server Event]", serverEvent.type, serverEvent); // Basic logging
+    //  console.log("[Server Event]", serverEvent.type, serverEvent); // Basic logging
 
     switch (serverEvent.type) {
       case "session.created": {
@@ -496,13 +496,13 @@ export function useHandleServerEvent({
 
       case "session.updated": {
         // Session was updated successfully, no action needed
-        console.log(`[Server Event] Session updated successfully`);
+        // console.log(`[Server Event] Session updated successfully`);
         break;
       }
 
       case "input_audio_buffer.cleared": {
         // Audio buffer cleared, no action needed
-        console.log(`[Server Event] Input audio buffer cleared`);
+        // console.log(`[Server Event] Input audio buffer cleared`);
         break;
       }
 
@@ -510,13 +510,13 @@ export function useHandleServerEvent({
       case "response.function_call_arguments.done": {
         // Function call arguments streaming events, can be ignored for now
         // These are used for streaming updates during function call argument formation
-        console.log(`[Server Event] Function call arguments ${serverEvent.type === 'response.function_call_arguments.done' ? 'completed' : 'updated'}`);
+        // console.log(`[Server Event] Function call arguments ${serverEvent.type === 'response.function_call_arguments.done' ? 'completed' : 'updated'}`);
         break;
       }
 
       case "output_audio_buffer.stopped": {
         // Audio playback stopped
-        console.log(`[Server Event] Audio playback stopped`);
+        // console.log(`[Server Event] Audio playback stopped`);
         break;
       }
 
@@ -537,7 +537,7 @@ export function useHandleServerEvent({
         }
 
         if(isTransferringAgentRef.current && role==="assistant") {
-          console.log(`[Server Event Hook] Skipping item creation for agent transfer: ${itemId}`);
+          // console.log(`[Server Event Hook] Skipping item creation for agent transfer: ${itemId}`);
           break;
         }
         // If this is a function_call_output, its primary data (for UI state) should have been processed
@@ -546,7 +546,7 @@ export function useHandleServerEvent({
         if (itemType === "function_call_output") {
           const functionName = (serverEvent.item as any).name;
           const outputString = (serverEvent.item as any).output;
-          console.log(`[Server Event Hook] function_call_output for ${functionName}:`, outputString);
+          // console.log(`[Server Event Hook] function_call_output for ${functionName}:`, outputString);
           if (outputString) {
             try {
               const outputData = JSON.parse(outputString);
@@ -659,7 +659,7 @@ export function useHandleServerEvent({
       case "response.created": {
         // Mark that we have an active response
         hasActiveResponseRef.current = true;
-        console.log(`[Server Event] Response created, marked as active`);
+        // console.log(`[Server Event] Response created, marked as active`);
         break;
       }
 
@@ -704,31 +704,31 @@ export function useHandleServerEvent({
       // Handle the previously unhandled event types
       case "rate_limits.updated":
         // These events can be logged but don't require specific handling
-        console.log(`[Server Event] ${serverEvent.type} received and acknowledged`);
+        // console.log(`[Server Event] ${serverEvent.type} received and acknowledged`);
         break;
         
       case "response.output_item.added":
         // This event signals a new output item (like text or function call) is being added to the response
-        console.log(`[Server Event] Output item added, index: ${(serverEvent as any).output_index}`);
+        // console.log(`[Server Event] Output item added, index: ${(serverEvent as any).output_index}`);
         break;
 
       case "response.content_part.added":
       case "response.content_part.done":
         // These events relate to content parts within output items
         if ((serverEvent as any).item_id) {
-          console.log(`[Server Event] Content part event for item: ${(serverEvent as any).item_id}`);
+          // console.log(`[Server Event] Content part event for item: ${(serverEvent as any).item_id}`);
         }
         break;
         
       case "output_audio_buffer.started":
         // Audio playback is starting
-        console.log(`[Server Event] Audio buffer started for response: ${(serverEvent as any).response_id}`);
+        // console.log(`[Server Event] Audio buffer started for response: ${(serverEvent as any).response_id}`);
         break;
         
       case "response.audio.done":
       case "response.audio_transcript.done":
         // Audio playback and transcript are complete
-        console.log(`[Server Event] Audio playback and transcript are complete`);
+        // console.log(`[Server Event] Audio playback and transcript are complete`);
         break;
 
       case "session.error": {
@@ -754,7 +754,7 @@ export function useHandleServerEvent({
            break;
        }
       default:
-         console.log(`[Server Event Hook] Unhandled event type: ${serverEvent.type}`);
+        //  console.log(`[Server Event Hook] Unhandled event type: ${serverEvent.type}`);
         break;
     }
   };
