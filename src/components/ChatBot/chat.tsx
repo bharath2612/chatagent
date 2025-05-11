@@ -165,7 +165,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
   // Update transcript management functions to use safe IDs
   const addTranscriptMessage = useCallback((itemId: string, role: "user" | "assistant" | "system", text: string, properties?: PropertyProps[]) => {
       // *** LOGGING POINT 4 ***
-      console.log(`[addTranscriptMessage] Called with role: ${role}, itemId: ${itemId}, hasProperties: ${!!properties}`);
+      // console.log(`[addTranscriptMessage] Called with role: ${role}, itemId: ${itemId}, hasProperties: ${!!properties}`);
       
       if (itemId === 'new' || itemId.length > 32) {
           itemId = generateSafeId();
@@ -174,7 +174,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       if (role === 'assistant') {
           setLastAgentTextMessage(text);
           if (properties && properties.length > 0) {
-              console.log('[addTranscriptMessage] Properties detected, skipping setPropertyListData here (handled in handleServerEvent).', properties);
+              // console.log('[addTranscriptMessage] Properties detected, skipping setPropertyListData here (handled in handleServerEvent).', properties);
           }
           // Never clear propertyListData for text messages, we want to keep them displayed
       }
@@ -182,10 +182,10 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       setTranscriptItems((prev) => {
            // Avoid adding duplicates if item already exists (e.g., from optimistic update)
            if (prev.some(item => item.itemId === itemId)) {
-               console.log(`[addTranscriptMessage] Item ${itemId} already exists, skipping add.`);
+              //  console.log(`[addTranscriptMessage] Item ${itemId} already exists, skipping add.`);
                return prev; 
            }
-            console.log(`[addTranscriptMessage] Adding item ${itemId} to transcriptItems state.`);
+            // console.log(`[addTranscriptMessage] Adding item ${itemId} to transcriptItems state.`);
            return [
                ...prev,
                {
@@ -233,7 +233,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
   // --- Send Client Events --- 
   const sendClientEvent = useCallback((eventObj: any, eventNameSuffix = "") => {
     if (dcRef.current && dcRef.current.readyState === "open") {
-      console.log(`[Send Event] ${eventObj.type} ${eventNameSuffix}`, eventObj);
+      // console.log(`[Send Event] ${eventObj.type} ${eventNameSuffix}`, eventObj);
       dcRef.current.send(JSON.stringify(eventObj));
     } else {
       console.error(
@@ -641,11 +641,11 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
          let text = serverEvent.item?.content?.[0]?.text ?? serverEvent.item?.content?.[0]?.transcript ?? "";
          const itemId = serverEvent.item?.id;
          if (itemId && text) {
-             console.log(`[handleServerEvent] Calling addTranscriptMessage for regular assistant message. itemId: ${itemId}, text: ${text}`);
+            //  console.log(`[handleServerEvent] Calling addTranscriptMessage for regular assistant message. itemId: ${itemId}, text: ${text}`);
              addTranscriptMessage(itemId, 'assistant', text, undefined);
              assistantMessageHandledLocally = true; // Mark that an assistant message was added
          } else {
-             console.log("[handleServerEvent] Skipping assistant conversation.item.created event (no itemId or text).");
+            //  console.log("[handleServerEvent] Skipping assistant conversation.item.created event (no itemId or text).");
          }
      }
 
@@ -655,7 +655,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       serverEvent.item?.type === 'function_call_output' &&
       (serverEvent.item as any).name === 'getProjectDetails';
     if (!isGetProjectDetailsOutput && !propertiesHandledLocally) {
-      console.log(`[handleServerEvent] Passing event ${serverEvent.type} to original hook handler.`);
+      // console.log(`[handleServerEvent] Passing event ${serverEvent.type} to original hook handler.`);
       handleServerEventRefFromHook.current(serverEvent);
     }
 
@@ -720,7 +720,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
   // --- Session Update Logic --- 
    const updateSession = useCallback(async (shouldTriggerResponse: boolean = false) => {
        if (sessionStatus !== 'CONNECTED' || !selectedAgentConfigSet || !dcRef.current) {
-           console.log("[Update Session] Cannot update, not connected or config missing.");
+          //  console.log("[Update Session] Cannot update, not connected or config missing.");
            return;
        }
        
@@ -1381,15 +1381,15 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
 
   // --- Render --- 
   // *** LOGGING POINT 5 ***
-  console.log("[Render] State before return:", { 
-      sessionStatus, 
-      showIntro, 
-      lastAgentTextMessage: lastAgentTextMessage?.substring(0, 50) + '...', // Log snippet
-      propertyListDataLength: propertyListData?.length, 
-      selectedPropertyDetails: !!selectedPropertyDetails, 
-      inputVisible, 
-      micMuted 
-  });
+  // console.log("[Render] State before return:", { 
+  //     sessionStatus, 
+  //     showIntro, 
+  //     lastAgentTextMessage: lastAgentTextMessage?.substring(0, 50) + '...', // Log snippet
+  //     propertyListDataLength: propertyListData?.length, 
+  //     selectedPropertyDetails: !!selectedPropertyDetails, 
+  //     inputVisible, 
+  //     micMuted 
+  // });
 
   // Add handleTimeSlotSelection function to handle slot selection
   const handleTimeSlotSelection = useCallback((date: string, time: string) => {
