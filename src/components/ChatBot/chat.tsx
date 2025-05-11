@@ -162,11 +162,18 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
   // Add state to track when properties are being loaded
   const [isLoadingProperties, setIsLoadingProperties] = useState<boolean>(false);
 
+  // Track the previous agent name for transition detection
+  const prevAgentNameRef = useRef<string | null>(null);
+  // Add a ref to track if we've already shown the verification success message
+  const hasShownSuccessMessageRef = useRef<boolean>(false);
+  // Add a ref to track the last property query message to avoid repeated processing
+  const lastPropertyQueryRef = useRef<string | null>(null);
+
   // Helper to generate safe IDs (32 chars max)
   const generateSafeId = () => uuidv4().replace(/-/g, '').slice(0, 32);
 
   // Update transcript management functions to use safe IDs
-  const addTranscriptMessage = useCallback((itemId: string, role: "user" | "assistant" | "system", text: string, properties?: PropertyProps[]) => {
+  const addTranscriptMessage = useCallback((itemId: string, role: "user" | "assistant" | "system", text: string, properties?: PropertyProps[], agentName?: string) => {
       // *** LOGGING POINT 4 ***
       // console.log(`[addTranscriptMessage] Called with role: ${role}, itemId: ${itemId}, hasProperties: ${!!properties}`);
       
@@ -198,6 +205,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
                    text: text, 
                    createdAtMs: Date.now(),
                    status: (role === 'assistant' || role === 'user') ? 'IN_PROGRESS' : 'DONE',
+                   agentName: agentName
                },
            ];
        });
@@ -499,6 +507,11 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       console.log("[handleServerEvent] Properties are already being loaded, skipping duplicate loading");
     }
 
+    // When response is done, log which agent completed the response
+    if (serverEvent.type === "response.done") {
+      console.log(`[Agent Complete] ${selectedAgentName} finished response`);
+    }
+
     // --- Handle Function Call Output --- 
     if (
       serverEvent.type === "conversation.item.created" &&
@@ -506,6 +519,12 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
     ) {
         const functionOutputItem = serverEvent.item as any;
         const functionName = functionOutputItem.name;
+
+        // Special case: when initiating scheduling, clear previous agent messages
+        if (functionName === "initiateScheduling") {
+          console.log("[handleServerEvent] Detected initiateScheduling, clearing last agent message");
+          setLastAgentTextMessage(null);
+        }
 
         // Handle getProjectDetails
         if (functionName === "getProjectDetails") {
@@ -577,6 +596,9 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
             }
         } else if (functionName === "getAvailableSlots") {
             console.log("[handleServerEvent] Detected function_call_output for getAvailableSlots.");
+            // Clear any previous messages from other agents when showing scheduling form
+            setLastAgentTextMessage(null);
+            
             const outputString = functionOutputItem.output;
             if (outputString) {
                 try {
@@ -619,6 +641,8 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
                         // Play the message from the agent that came with the slots
                         if (outputData.message) {
                             console.log(`[UI] Slots message from agent: ${outputData.message}`);
+                            // Add an explicit scheduling agent message
+                            addTranscriptMessage(generateSafeId(), 'assistant', `[Scheduler] ${outputData.message}`);
                             // The LLM response will include this message, so we don't need to add it to transcript here
                         }
                         
@@ -636,9 +660,17 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
                     const outputData = JSON.parse(outputString);
                     // The UI flow is handled within TimePick/BookingConfirmation/AppointmentConfirmed
                     // We just need to know if it was successful to potentially hide the picker if it's still open
-                    if (outputData.success === true) {
+                    if (outputData.success === true || outputData.booking_confirmed === true) {
                         console.log("[UI] Booking successful reported by agent.");
                         setShowTimeSlots(false); // Hide slots if booking is done
+                        
+                        // Add explicit scheduling confirmation message
+                        if (outputData.message) {
+                            addTranscriptMessage(generateSafeId(), 'assistant', `[Scheduler] ${outputData.message}`);
+                        } else {
+                            addTranscriptMessage(generateSafeId(), 'assistant', `[Scheduler] Your visit has been scheduled!`);
+                        }
+                        
                         propertiesHandledLocally = true;
                     } else if (outputData.error) {
                         // Maybe show an error message?
@@ -663,9 +695,56 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
          let text = serverEvent.item?.content?.[0]?.text ?? serverEvent.item?.content?.[0]?.transcript ?? "";
          const itemId = serverEvent.item?.id;
          if (itemId && text) {
-            //  console.log(`[handleServerEvent] Calling addTranscriptMessage for regular assistant message. itemId: ${itemId}, text: ${text}`);
-             addTranscriptMessage(itemId, 'assistant', text, undefined);
-             assistantMessageHandledLocally = true; // Mark that an assistant message was added
+            // Log agent response when complete (not during streaming)
+            if (serverEvent.item?.status === "done" || (serverEvent.item as any)?.done === true) {
+              console.log(`[Agent Response] ${selectedAgentName}: "${text.substring(0, 100)}${text.length > 100 ? '...' : ''}"`);
+            }
+            
+            // Use a prefix to identify which agent sent the message
+            const agentPrefix = activeDisplayMode === 'SCHEDULING_FORM' ? '[Scheduler] ' : 
+                               selectedAgentName === 'authentication' ? '[Auth] ' : '';
+            
+            // Special case handling for scheduling agent messages
+            if (selectedAgentName === 'scheduleMeeting') {
+              // Filter out premature scheduling confirmations before time selection is complete
+              if (!selectedTime && text.toLowerCase().includes('confirm') && 
+                  (text.toLowerCase().includes('visit') || text.toLowerCase().includes('schedule'))) {
+                console.log(`[Agent Response] Filtering premature scheduling confirmation message`);
+                assistantMessageHandledLocally = true; // Skip adding this message
+                return;
+              }
+              
+              // Filter out repeat date selection prompts if we already have date selected
+              if (selectedDay && text.toLowerCase().includes('select a date') && 
+                  text.toLowerCase().includes('calendar')) {
+                console.log(`[Agent Response] Filtering repeat date selection prompt (date already selected)`);
+                assistantMessageHandledLocally = true; // Skip adding this message
+                return;
+              }
+            }
+            
+            // If we're transitioning between agents, make it clear in the conversation
+            if (prevAgentNameRef.current && prevAgentNameRef.current !== selectedAgentName) {
+              // Only for the first message from a new agent
+              const isFirstMessageFromAgent = !(transcriptItems.some(item => 
+                item.type === 'MESSAGE' && item.role === 'assistant' && 
+                item.agentName === selectedAgentName));
+                
+              if (isFirstMessageFromAgent) {
+                console.log(`[Agent Response] First message from new agent: ${selectedAgentName}`);
+                addTranscriptMessage(
+                  generateSafeId(),
+                  'system',
+                  `--- ${selectedAgentName === 'scheduleMeeting' ? 'Scheduling Assistant' : 
+                     selectedAgentName === 'authentication' ? 'Authentication' : 
+                     'Property Assistant'} ---`
+                );
+              }
+            }
+            
+            // Add message to transcript with agent prefix
+            addTranscriptMessage(itemId, 'assistant', agentPrefix + text, undefined, selectedAgentName);
+            assistantMessageHandledLocally = true; // Mark that an assistant message was added
          } else {
             //  console.log("[handleServerEvent] Skipping assistant conversation.item.created event (no itemId or text).");
          }
@@ -687,8 +766,15 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       handleServerEventRefFromHook,
       generateSafeId,
       propertyListData,
-      isLoadingProperties, // Add new dependency
-      setIsLoadingProperties // Add setter to dependencies
+      isLoadingProperties,
+      setIsLoadingProperties,
+      selectedAgentName, // Add the current agent name to dependencies
+      selectedProperty, // Add selectedProperty to dependencies
+      setSelectedProperty, // Add property setter to dependencies
+      selectedTime, // Add selectedTime to dependencies
+      selectedDay, // Add selectedDay to dependencies
+      prevAgentNameRef,
+      transcriptItems
     ]);
 
   // Ref part remains the same
@@ -844,12 +930,21 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
 
        sendClientEvent(sessionUpdatePayload, `(agent: ${selectedAgentName})`);
 
-       // If shouldTriggerResponse is true, follow the old code's approach of sending a simulated message
+       // If shouldTriggerResponse is true, follow old code approach of sending simulated message
        if (shouldTriggerResponse) {
            console.log("[Update Session] Triggering initial response with simulated 'hi' message");
+           
+           // For authentication agent, set the VERIFICATION_FORM display mode first
+           if (selectedAgentName === 'authentication') {
+               // Set UI mode before sending the message, so it won't be overridden
+               setActiveDisplayMode('VERIFICATION_FORM');
+               console.log("[Update Session] Setting VERIFICATION_FORM display mode for authentication agent");
+           }
+           
+           // Now send the simulated message to trigger the agent response
            sendSimulatedUserMessage("hi");
        }
-   }, [sessionStatus, selectedAgentName, selectedAgentConfigSet, agentMetadata, chatbotId, sendClientEvent, selectedLanguage, micMuted]); 
+   }, [sessionStatus, selectedAgentName, selectedAgentConfigSet, agentMetadata, chatbotId, sendClientEvent, selectedLanguage, micMuted, setActiveDisplayMode]);
 
   // Add the sendSimulatedUserMessage function to match old code
   const sendSimulatedUserMessage = useCallback((text: string) => {
@@ -1106,7 +1201,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
               });
           } else {
                // This log confirms the ref is preventing re-runs for the *same* agent/connection.
-               console.log("[Effect] Connected, but initial session setup already marked as done/in-progress.");
+              //  console.log("[Effect] Connected, but initial session setup already marked as done/in-progress.");
           }
       } else {
           // Log why the effect isn't running the setup
@@ -1187,12 +1282,15 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
        }
    }, [transcriptItems, lastAgentTextMessage, propertyListData, selectedPropertyDetails]); // Scroll when relevant content changes
 
-  // Track the previous agent name for transition detection
-  const prevAgentNameRef = useRef<string | null>(null);
-  // Add a ref to track if we've already shown the verification success message
-  const hasShownSuccessMessageRef = useRef<boolean>(false);
-  // Add a ref to track the last property query message to avoid repeated processing
-  const lastPropertyQueryRef = useRef<string | null>(null);
+  // --- UI Handlers --- 
+  const toggleInput = () => {
+    setInputVisible(!inputVisible)
+    if (!inputVisible) {
+      setTimeout(() => {
+        inputRef.current?.focus()
+      }, 300)
+    }
+  }
 
   // Add useEffect to monitor agent changes and display the scheduling UI
   useEffect(() => {
@@ -1206,10 +1304,17 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
     
     const wasFromAuthentication = prevAgentNameRef.current === "authentication";
     
+    // Clear last agent message when switching agents to avoid confusion
+    setLastAgentTextMessage(null);
+
     if (selectedAgentName === "authentication") {
       console.log("[Agent Change] Detected switch to authentication agent.");
       setIsVerifying(true); // Show verification UI elements
       setShowTimeSlots(false); // Hide scheduling UI
+      // Explicitly set VERIFICATION_FORM display mode when switching to authentication
+      setActiveDisplayMode('VERIFICATION_FORM');
+      console.log("[Agent Change] Setting VERIFICATION_FORM display mode for authentication agent");
+      
       // Do not reset OTP screen here as we want it to show after verification
       
       // Reset success message flag when entering authentication again
@@ -1218,7 +1323,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       console.log("[Agent Change] Detected switch to scheduleMeeting agent.");
       setIsVerifying(false); // Hide verification UI if switching *to* scheduling
       setShowOtpScreen(false); // Hide OTP screen when switching away from authentication
-      setShowTimeSlots(true); // Show time slotsgit
+      setShowTimeSlots(true); // Show time slots
       // Remove direct control of setShowTimeSlots here.
       // Let getAvailableSlots tool result handle showing the time slots via setActiveDisplayMode and setShowTimeSlots.
       // setAvailableSlots({}); // Clearing availableSlots here might be okay, or defer to getAvailableSlots
@@ -1246,7 +1351,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
           if (canCreateResponse()) {
             // const welcomeMsg = "Thank you for verifying your identity. How can I help you with properties today?";
             // Make the message very distinct to check if this update is visible
-            const welcomeMsg = `REAL ESTATE AGENT ACTIVE (Verified ${new Date().toLocaleTimeString()})! How can I help?`;
+            const welcomeMsg = `Welcome back! How can I help you with properties today?`;
             addTranscriptMessage(generateSafeId(), 'assistant', welcomeMsg);
             
             // Trigger the agent to generate a proper response
@@ -1265,17 +1370,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
     prevAgentNameRef.current = selectedAgentName;
     
     // Reset setup flag if agent changes (handled in separate effect)
-  }, [selectedAgentName, selectedProperty, agentMetadata]);
-
-  // --- UI Handlers --- 
-  const toggleInput = () => {
-    setInputVisible(!inputVisible)
-    if (!inputVisible) {
-      setTimeout(() => {
-        inputRef.current?.focus()
-      }, 300)
-    }
-  }
+  }, [selectedAgentName, selectedProperty, agentMetadata, canCreateResponse, generateSafeId, addTranscriptMessage, sendClientEvent]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") {
@@ -1358,9 +1453,6 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
   const handleTimeSlotSelection = useCallback((date: string, time: string) => {
     console.log(`[UI] User selected time slot: date=${date}, time=${time || 'none'}`);
     
-    // Stop any current response/audio first to avoid errors
-    stopCurrentResponse(sendClientEvent);
-    
     // Store the selected date in state (always), and time only if provided
     setSelectedDay(date);
     if (time) {
@@ -1381,8 +1473,8 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
         console.log(`[UI] Saved only date ${date} to agent metadata (no time yet)`);
       }
     }
-    
-    // Add a small delay before sending the selection message to avoid race conditions
+
+    // Add a delay to ensure we don't have race conditions with response processing
     setTimeout(() => {
       // Create different messages based on whether this is a date-only selection or date+time
       const userMessageId = generateSafeId();
@@ -1394,36 +1486,56 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
         selectionMessage = `Selected ${date}.`; // Date-only selection
       }
       
-      addTranscriptMessage(userMessageId, 'user', selectionMessage);
-      
-      sendClientEvent(
-        {
-          type: "conversation.item.create",
-          item: {
-            id: userMessageId, type: "message", role: "user", 
-            content: [{ type: "input_text", text: selectionMessage }]
-          }
-        },
-        time ? "(time slot selection)" : "(date selection only)"
-      );
-      
-      // Small delay before creating a response
-      setTimeout(() => {
-        if (canCreateResponse()) {
-          sendClientEvent({ type: "response.create" }, "(trigger response after selection)");
-        } else {
-          console.log("[UI] Cannot create response - active response or agent transfer in progress");
-          sendClientEvent({ type: "response.cancel" });
+      // Stop any current response to avoid cancellation errors
+      if (!canCreateResponse()) {
+        console.log("[UI] Stopping any active response before sending selection");
+        sendClientEvent({ type: "response.cancel" }, "(canceling before selection)");
+        sendClientEvent({ type: "output_audio_buffer.clear" }, "(clearing audio buffer)");
+        
+        // Give the server time to process the cancellation
+        setTimeout(() => {
+          // Now safe to add message and create a new response
+          addTranscriptMessage(userMessageId, 'user', selectionMessage);
           
-          // Try again after cancellation
+          sendClientEvent(
+            {
+              type: "conversation.item.create",
+              item: {
+                id: userMessageId, type: "message", role: "user", 
+                content: [{ type: "input_text", text: selectionMessage }]
+              }
+            },
+            time ? "(time slot selection)" : "(date selection only)"
+          );
+          
+          // Small delay before creating a response
           setTimeout(() => {
-            sendClientEvent({ type: "response.create" }, "(retry after cancellation)");
-          }, 200);
-        }
-      }, 100);
+            sendClientEvent({ type: "response.create" }, "(trigger response after selection)");
+          }, 150);
+        }, 250);
+      } else {
+        // No active response, can proceed immediately
+        addTranscriptMessage(userMessageId, 'user', selectionMessage);
+        
+        sendClientEvent(
+          {
+            type: "conversation.item.create",
+            item: {
+              id: userMessageId, type: "message", role: "user", 
+              content: [{ type: "input_text", text: selectionMessage }]
+            }
+          },
+          time ? "(time slot selection)" : "(date selection only)"
+        );
+        
+        // Small delay before creating a response
+        setTimeout(() => {
+          sendClientEvent({ type: "response.create" }, "(trigger response after selection)");
+        }, 100);
+      }
     }, 100);
 
-  }, [sendClientEvent, addTranscriptMessage, generateSafeId, selectedAgentConfigSet, stopCurrentResponse, canCreateResponse]);
+  }, [sendClientEvent, addTranscriptMessage, generateSafeId, selectedAgentConfigSet, canCreateResponse]);
 
   // Add verification submission handler
   const handleVerificationSubmit = useCallback((name: string, phone: string) => {

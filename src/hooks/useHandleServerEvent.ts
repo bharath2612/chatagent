@@ -314,6 +314,12 @@ export function useHandleServerEvent({
             if (newAgentConfig && newAgentConfig.name === "authentication") {
               console.log("[handleFunctionCall] Always performing silent transfer to authentication agent");
               silentTransfer = true; // Always silent transfer for authentication
+              
+              // Special handling for authentication - preserve VERIFICATION_FORM display mode
+              if (fnResult.ui_display_hint === 'VERIFICATION_FORM') {
+                setActiveDisplayMode('VERIFICATION_FORM');
+                console.log("[handleFunctionCall] Setting VERIFICATION_FORM mode for authentication transfer");
+              }
             }
 
             // Use silentTransfer variable for the condition
@@ -342,6 +348,10 @@ export function useHandleServerEvent({
               // Also trigger automatic response for authentication agent transfers
               if (newAgentConfig && newAgentConfig.name === "authentication") {
                 console.log("[handleFunctionCall] Authentication agent transfer - triggering automatic response");
+                
+                // Special handling for authentication - preserve VERIFICATION_FORM display mode after transfer
+                const preserveVerificationForm = fnResult.ui_display_hint === 'VERIFICATION_FORM';
+                
                 setTimeout(() => {
                   // Before creating a new response, make sure there's no active one
                   if (hasActiveResponseRef.current) {
@@ -349,9 +359,19 @@ export function useHandleServerEvent({
                     sendClientEvent({ type: "response.cancel" }, "(cancelling before new response)");
                     // Short delay to ensure the cancellation is processed
                     setTimeout(() => {
+                      // For authentication, set the UI mode explicitly again right before sending response
+                      if (preserveVerificationForm) {
+                        console.log("[handleFunctionCall] Preserving VERIFICATION_FORM mode after authentication transfer");
+                        setActiveDisplayMode('VERIFICATION_FORM');
+                      }
                       sendClientEvent({ type: "response.create" }, "(auto-trigger response after authentication transfer)");
                     }, 100);
                   } else {
+                    // For authentication, set the UI mode explicitly again right before sending response
+                    if (preserveVerificationForm) {
+                      console.log("[handleFunctionCall] Preserving VERIFICATION_FORM mode after authentication transfer");
+                      setActiveDisplayMode('VERIFICATION_FORM');
+                    }
                     sendClientEvent({ type: "response.create" }, "(auto-trigger response after authentication transfer)");
                   }
                 }, 200);
@@ -591,6 +611,103 @@ export function useHandleServerEvent({
           if (JSON.parse(outputString || '{}').message || JSON.parse(outputString || '{}').error) break;
         }
 
+        // --- Handle Regular Assistant Message ---
+        if (serverEvent.type === "conversation.item.created" && serverEvent.item?.role === 'assistant') {
+            let propertiesHandledLocally = false;
+            let assistantMessageHandledLocally = false;
+            let text = serverEvent.item?.content?.[0]?.text ?? serverEvent.item?.content?.[0]?.transcript ?? "";
+            const itemId = serverEvent.item?.id;
+            if (itemId && text) {
+               // Log agent response when complete (not during streaming)
+               if (serverEvent.item?.status === "done" || (serverEvent.item as any)?.done === true) {
+                 console.log(`[Agent Response] ${selectedAgentName}: "${text.substring(0, 100)}${text.length > 100 ? '...' : ''}"`);
+               }
+               
+               // Use a prefix to identify which agent sent the message
+               let activeDisplayMode: string = 'CHAT';
+               const agentPrefix = activeDisplayMode === 'SCHEDULING_FORM' ? '[Scheduler] ' : 
+                                  selectedAgentName === 'authentication' ? '[Auth] ' : '';
+               
+               // Critical: For authentication agent, ensure we DON'T change the display mode
+               // even though we're showing a message
+               const preserveCurrentMode = selectedAgentName === 'authentication' && 
+                                         activeDisplayMode === 'VERIFICATION_FORM';
+               
+               if (preserveCurrentMode) {
+                 console.log('[Agent Response] Authentication agent responding, preserving VERIFICATION_FORM mode');
+               }
+               
+               // Special case handling for scheduling agent messages
+               if (selectedAgentName === 'scheduleMeeting') {
+                 // Filter out premature scheduling confirmations before time selection is complete
+                 let selectedTime: string | null = null;
+                 if (!selectedTime && text.toLowerCase().includes('confirm') && 
+                     (text.toLowerCase().includes('visit') || text.toLowerCase().includes('schedule'))) {
+                   console.log(`[Agent Response] Filtering premature scheduling confirmation message`);
+                   assistantMessageHandledLocally = true; // Skip adding this message
+                   return;
+                 }
+                 
+                 // Filter out repeat date selection prompts if we already have date selected
+                 let selectedDay: string | null = null;
+                 if (selectedDay && text.toLowerCase().includes('select a date') && 
+                     text.toLowerCase().includes('calendar')) {
+                   console.log(`[Agent Response] Filtering repeat date selection prompt (date already selected)`);
+                   assistantMessageHandledLocally = true; // Skip adding this message
+                   return;
+                 }
+               }
+               
+               // Utility function to generate an ID for new messages
+               const localGenerateSafeId = () => {
+                 return Date.now().toString(36) + Math.random().toString(36).substring(2, 10);
+               };
+               
+               // If we're transitioning between agents, make it clear in the conversation
+               const prevAgentNameRef = { current: selectedAgentName };
+               if (prevAgentNameRef.current && prevAgentNameRef.current !== selectedAgentName) {
+                 // Only for the first message from a new agent
+                 const isFirstMessageFromAgent = !(transcriptItems.some(item => 
+                   item.type === 'MESSAGE' && item.role === 'assistant' && 
+                   item.agentName === selectedAgentName));
+                   
+                 if (isFirstMessageFromAgent) {
+                   console.log(`[Agent Response] First message from new agent: ${selectedAgentName}`);
+                   addTranscriptMessage(
+                     localGenerateSafeId(),
+                     'system',
+                     `--- ${selectedAgentName === 'scheduleMeeting' ? 'Scheduling Assistant' : 
+                        selectedAgentName === 'authentication' ? 'Authentication' : 
+                        'Property Assistant'} ---`
+                   );
+                 }
+               }
+               
+               // Add message to transcript with agent prefix
+               addTranscriptMessage(itemId, 'assistant', agentPrefix + text);
+               
+               // Ensure we keep the verification form visible even after authentication agent responds
+               if (preserveCurrentMode) {
+                 setTimeout(() => {
+                   // Make sure we're using the passed-in setActiveDisplayMode function
+                   if (typeof setActiveDisplayMode === 'function') {
+                     setActiveDisplayMode('VERIFICATION_FORM');
+                     console.log('[Agent Response] Re-applying VERIFICATION_FORM mode after authentication response');
+                   }
+                 }, 10);
+               }
+               
+               assistantMessageHandledLocally = true; // Mark that an assistant message was added
+               
+               // If we handled the message here, skip further processing
+               if (assistantMessageHandledLocally) {
+                 return;
+               }
+            } else {
+               //  console.log("[handleServerEvent] Skipping assistant conversation.item.created event (no itemId or text).");
+            }
+        }
+
         // General message handling (user messages, or assistant messages not from function_call_output with a .message field)
         if (role === "user" && !text && serverEvent.item?.content?.[0]?.type !== "input_text") {
           text = "[Transcribing...]";
@@ -664,6 +781,7 @@ export function useHandleServerEvent({
       }
 
       case "response.done": {
+        // When a response is completed, clear the active response flag
         hasActiveResponseRef.current = false;
         console.log(`[Server Event Hook] Response done. Agent: ${selectedAgentName}. Transferring flag before check: ${isTransferringAgentRef.current}`);
 
@@ -689,6 +807,13 @@ export function useHandleServerEvent({
             }
           });
         }
+        break;
+      }
+
+      case "response.cancel": {
+        // When a response is canceled, clear the active response flag
+        hasActiveResponseRef.current = false;
+        console.log(`[Server Event Hook] Response canceled for agent ${selectedAgentName}`);
         break;
       }
 
@@ -744,11 +869,20 @@ export function useHandleServerEvent({
            const errorMessage = errorDetails?.message || JSON.stringify(serverEvent) || 'Unknown error structure from server';
            const errorCode = errorDetails?.code || 'N/A';
            console.error(`[Top-Level Error Event] Code: ${errorCode}, Message: ${errorMessage}`, errorDetails, serverEvent);
+           
+           // Handle expected error cases
            if (errorCode === "conversation_already_has_active_response") {
              hasActiveResponseRef.current = true;
              console.log("[Error Handler] Marked response as active due to error");
            }
-           if (errorCode !== "conversation_already_has_active_response") {
+           else if (errorCode === "response_cancel_not_active") {
+             // This is an expected error when trying to cancel a response that's already done
+             console.log("[Error Handler] Ignoring harmless cancel error: no active response found");
+             // Ensure the active response flag is cleared
+             hasActiveResponseRef.current = false;
+           }
+           // Only add system message for unexpected errors
+           else if (errorCode !== "conversation_already_has_active_response") {
              addTranscriptMessage(generateSafeId(), 'system', `Server Error (${errorCode}): ${errorMessage}`);
            }
            break;

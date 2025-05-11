@@ -74,6 +74,7 @@ export interface TranscriptItem {
   createdAtMs: number;
   status?: "IN_PROGRESS" | "DONE" | "ERROR"; // Added ERROR status
   isHidden?: boolean; // UI state, might move elsewhere
+  agentName?: string; // Track which agent sent this message
 }
 
 export interface Log {
