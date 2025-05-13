@@ -337,38 +337,44 @@ const authenticationAgent: AgentConfig = {
         if (isVerifiedByServer) {
           console.log("[verifyOTP] OTP verified successfully based on server response.");
           
-          // Determine where to transfer back to based on came_from metadata
           const cameFrom = (authenticationAgent.metadata as any)?.came_from;
-          const destination = cameFrom === 'scheduling' ? 'scheduleMeeting' : 'realEstate';  
-          console.log(`[verifyOTP] Preparing transfer back to: ${destination}`);
+          const metadataAny = authenticationAgent.metadata as any; // Cache for convenience
+
+          let destinationAgentName: string;
+          let transferData: any = {
+            is_verified: true,
+            customer_name: metadataAny?.customer_name || "",
+            phone_number: effective_phone_number, // Pass the verified phone
+            silentTransfer: true,
+            ui_display_hint: 'CHAT',
+            message: "Thank you for verifying!", // Agent says this briefly before silent transfer
+          };
+
+          if (cameFrom === 'scheduling') {
+            destinationAgentName = 'scheduleMeeting';
+            // Pass back all scheduling related data it might have received
+            transferData.property_id_to_schedule = metadataAny?.property_id_to_schedule;
+            transferData.property_name = metadataAny?.property_name;
+            transferData.selectedDate = metadataAny?.selectedDate;
+            transferData.selectedTime = metadataAny?.selectedTime;
+            // No specific flow_context needed here as scheduleMeetingAgent will set it later
+          } else {
+            destinationAgentName = 'realEstate';
+            transferData.flow_context = 'from_direct_auth'; // Flag for realEstateAgent
+          }
+          
+          console.log(`[verifyOTP] Preparing transfer to: ${destinationAgentName} with data:`, transferData);
 
           // IMPORTANT: Update agent's own metadata before returning transfer info
           if (authenticationAgent.metadata) {
             authenticationAgent.metadata.is_verified = true;
             // customer_name and phone_number should have been set by submitPhoneNumber or already exist
           }
-          
-          // Preserve scheduling data if the user came from scheduling agent
-          const metadataAny = authenticationAgent.metadata as any;
-          const schedulingData = cameFrom === 'scheduling' ? {
-            property_id_to_schedule: metadataAny?.property_id_to_schedule,
-            property_name: metadataAny?.property_name,
-            selectedDate: metadataAny?.selectedDate,
-            selectedTime: metadataAny?.selectedTime
-          } : {};
 
           return {
             verified: true,
-            destination_agent: destination,
-            silentTransfer: true,
-            ui_display_hint: 'CHAT', // Revert UI to chat before transfer
-            message: "Thank you for verifying!", // Agent says this briefly
-            // Data to be merged into the destination agent's metadata:
-            is_verified: true,
-            customer_name: authenticationAgent.metadata?.customer_name || "",
-            phone_number: effective_phone_number, // Pass the verified phone
-            ...schedulingData, // Include preserved scheduling data if applicable
-            // org_id, chatbot_id, session_id are already part of the metadata copied during transfer
+            destination_agent: destinationAgentName,
+            ...transferData
           };
         } else {
           const errorMsg = data.error || data.message || "Invalid OTP or verification failed.";

@@ -203,17 +203,16 @@ const scheduleMeetingAgent: AgentConfig = {
 
       if (!metadata.is_verified) {
            console.log("[scheduleVisit] User is not verified - automatically transferring to authentication agent");
-           // Directly return a transfer to authentication with silent transfer
            return {
              destination_agent: "authentication",
              silentTransfer: true,
              message: null,
              ui_display_hint: 'VERIFICATION_FORM',
              came_from: 'scheduling',
-             property_id_to_schedule: property_id, // Preserve the property ID
-             property_name: propertyName, // Preserve the property name
-             selectedDate: (metadata as any)?.selectedDate, // Preserve the selected date if available
-             selectedTime: (metadata as any)?.selectedTime // Preserve the selected time if available
+             property_id_to_schedule: property_id, 
+             property_name: propertyName, 
+             selectedDate: (metadata as any)?.selectedDate, 
+             selectedTime: (metadata as any)?.selectedTime 
            };
       }
 
@@ -258,18 +257,29 @@ const scheduleMeetingAgent: AgentConfig = {
 
         console.log("[scheduleVisit] Schedule visit successful via API:", result);
 
-        // Update metadata to reflect that scheduling has occurred
         if (scheduleMeetingAgent.metadata) {
             scheduleMeetingAgent.metadata.has_scheduled = true;
+            scheduleMeetingAgent.metadata.customer_name = customer_name; // Ensure customer_name is in metadata
+            scheduleMeetingAgent.metadata.phone_number = phone_number; // Ensure phone_number is in metadata
+            (scheduleMeetingAgent.metadata as any).property_name = propertyName; // Ensure property_name
+            (scheduleMeetingAgent.metadata as any).selectedDate = (metadata as any)?.selectedDate || actualVisitDateTime.split(' at ')[0]; // Ensure date
+            (scheduleMeetingAgent.metadata as any).selectedTime = (metadata as any)?.selectedTime || actualVisitDateTime.split(' at ')[1]; // Ensure time
+             (scheduleMeetingAgent.metadata as any).property_id_to_schedule = property_id; // Ensure property_id
         }
 
         return { 
           booking_confirmed: true,
-          confirmed_date: actualVisitDateTime,
-          ui_display_hint: 'CHAT',
-          message: `Great news! Your visit to ${propertyName} on ${actualVisitDateTime} is confirmed! You'll receive details shortly.`,
-          has_scheduled: true // Also include in the return for subsequent tools if needed
-        };
+          // message: null, // No direct message, realEstateAgent will confirm
+          // ui_display_hint: 'CHAT', // No specific UI hint, will go to completeScheduling next
+          // All necessary data is now in scheduleMeetingAgent.metadata for completeScheduling to pick up
+          // Ensure all required fields for the confirmation message are present in the metadata for completeScheduling
+          customer_name: customer_name,
+          property_name: propertyName,
+          selectedDate: (metadata as any)?.selectedDate || actualVisitDateTime.split(' at ')[0],
+          selectedTime: (metadata as any)?.selectedTime || actualVisitDateTime.split(' at ')[1],
+          property_id: property_id,
+          has_scheduled: true
+        }; // Agent will call completeScheduling next as per instructions
 
       } catch (error: any) {
          console.error("[scheduleVisit] Exception calling schedule API:", error);
@@ -297,12 +307,20 @@ const scheduleMeetingAgent: AgentConfig = {
     },
     completeScheduling: async () => {
       console.log("[scheduleMeeting.completeScheduling] Scheduling complete, transferring back to realEstate agent.");
+      const metadata = scheduleMeetingAgent.metadata as any; // Use 'as any' for easier access to custom fields
       return {
         destination_agent: "realEstate",
         silentTransfer: true,
-        has_scheduled: true,
-        ui_display_hint: 'CHAT', // Good practice to indicate next view is chat
-        message: null // Explicitly null for silent transfer if desired, though agent will respond anyway
+        message: null, // No message from this agent
+        // Pass all necessary data for realEstateAgent to confirm
+        customer_name: metadata?.customer_name,
+        is_verified: metadata?.is_verified, // Should be true
+        has_scheduled: metadata?.has_scheduled, // Should be true
+        property_name: metadata?.property_name,
+        property_id: metadata?.property_id_to_schedule, // Ensure this uses the correct field name
+        selectedDate: metadata?.selectedDate,
+        selectedTime: metadata?.selectedTime,
+        flow_context: 'from_full_scheduling' // Add the flag for realEstateAgent
       };
     }
   }

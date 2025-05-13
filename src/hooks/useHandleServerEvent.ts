@@ -248,48 +248,32 @@ export function useHandleServerEvent({
           if (newAgentConfig) {
             if (currentAgent.metadata) {
                // Create a clean copy for the new agent, merge specific fields passed back
-              newAgentConfig.metadata = { ...(currentAgent.metadata || {}) }; // Ensure metadata object exists
+              newAgentConfig.metadata = { ...(currentAgent.metadata || {}) }; 
+              // Always preserve critical IDs
+              if (currentAgent.metadata.chatbot_id) newAgentConfig.metadata.chatbot_id = currentAgent.metadata.chatbot_id;
+              if (currentAgent.metadata.org_id) newAgentConfig.metadata.org_id = currentAgent.metadata.org_id;
+              if (currentAgent.metadata.session_id) newAgentConfig.metadata.session_id = currentAgent.metadata.session_id;
+              
+              // Merge fields from fnResult (tool output that triggered transfer)
+              // These fields are crucial for context in the new agent
               if (fnResult.is_verified !== undefined) newAgentConfig.metadata.is_verified = fnResult.is_verified;
               if (fnResult.customer_name) newAgentConfig.metadata.customer_name = fnResult.customer_name;
               if (fnResult.phone_number) newAgentConfig.metadata.phone_number = fnResult.phone_number;
               if (fnResult.has_scheduled !== undefined) newAgentConfig.metadata.has_scheduled = fnResult.has_scheduled;
-              // Safely add property_to_schedule if metadata allows extra properties
-              if (fnResult.property_id_to_schedule && typeof newAgentConfig.metadata === 'object') {
-                 (newAgentConfig.metadata as any).property_id_to_schedule = fnResult.property_id_to_schedule;
-              }
-              
-              // IMPORTANT: Ensure chatbot_id is properly preserved during transfers
-              if (currentAgent.metadata.chatbot_id) {
-                newAgentConfig.metadata.chatbot_id = currentAgent.metadata.chatbot_id;
-                console.log(`[handleFunctionCall] Preserved chatbot_id during transfer: ${newAgentConfig.metadata.chatbot_id}`);
-              }
-              
-              // IMPORTANT: Ensure org_id is properly preserved during transfers
-              if (currentAgent.metadata.org_id) {
-                newAgentConfig.metadata.org_id = currentAgent.metadata.org_id;
-                console.log(`[handleFunctionCall] Preserved org_id during transfer: ${newAgentConfig.metadata.org_id}`);
-              }
-              
-              // IMPORTANT: Ensure session_id is properly preserved during transfers
-              if (currentAgent.metadata.session_id) {
-                newAgentConfig.metadata.session_id = currentAgent.metadata.session_id;
-                console.log(`[handleFunctionCall] Preserved session_id during transfer: ${newAgentConfig.metadata.session_id}`);
-              }
-              
-              // Add metadata to indicate where the agent came from (for return path)
-              if (currentAgent.name) {
+              if (fnResult.property_id_to_schedule) (newAgentConfig.metadata as any).property_id_to_schedule = fnResult.property_id_to_schedule;
+              if (fnResult.property_name) (newAgentConfig.metadata as any).property_name = fnResult.property_name;
+              if (fnResult.selectedDate) (newAgentConfig.metadata as any).selectedDate = fnResult.selectedDate;
+              if (fnResult.selectedTime) (newAgentConfig.metadata as any).selectedTime = fnResult.selectedTime;
+              if (fnResult.flow_context) (newAgentConfig.metadata as any).flow_context = fnResult.flow_context;
+              if (fnResult.came_from) newAgentConfig.metadata.came_from = fnResult.came_from; // Preserve if set by tool
+
+              // Add metadata to indicate where the agent came from (for return path), if not already set by tool
+              if (!newAgentConfig.metadata.came_from && currentAgent.name) {
                 newAgentConfig.metadata.came_from = currentAgent.name;
                 console.log(`[handleFunctionCall] Set came_from=${currentAgent.name} in metadata`);
               }
 
-              // Log the critical metadata fields for debugging
-              console.log("[handleFunctionCall] Transfer metadata summary:", {
-                destination: fnResult.destination_agent,
-                chatbot_id: newAgentConfig.metadata.chatbot_id,
-                org_id: newAgentConfig.metadata.org_id,
-                session_id: newAgentConfig.metadata.session_id,
-                is_verified: newAgentConfig.metadata.is_verified
-              });
+              console.log("[handleFunctionCall] Final merged metadata for new agent:", newAgentConfig.metadata);
             }
             
             // First cancel any active response to avoid the "conversation_already_has_active_response" error

@@ -8,6 +8,11 @@ import { AgentConfig, AgentMetadata as BaseAgentMetadata, TranscriptItem } from 
 interface AgentMetadata extends BaseAgentMetadata {
   project_id_map?: Record<string, string>; // Map project names to their IDs
   active_project_id?: string; // Current active project ID for direct reference
+  // Fields for post-scheduling/auth confirmation
+  selectedDate?: string;
+  selectedTime?: string;
+  property_name?: string; // For the scheduled property, distinct from active_project general focus
+  flow_context?: 'from_full_scheduling' | 'from_direct_auth';
 }
 
 // Add interface for property detection response
@@ -116,7 +121,7 @@ Your responsibilities include:
 
 LANGUAGE INSTRUCTIONS:
 - Respond ONLY in ${safeMetadata.language || "English"}.
-- **STYLE:** fun-casual, like you’re chatting with a friend.
+- **STYLE:** fun-casual, like you're chatting with a friend.
 - **LENGTH:** absolute maximum 2 short sentences (≈ 30 words). Never write paragraphs.
 - Keep answers concise, especially when property cards (PROPERTY_LIST) or images (IMAGE_GALLERY) are being displayed by the UI based on your tool results. Let the UI show the details.
 
@@ -137,6 +142,19 @@ CRITICAL FLOW RULES:
 - ONLY ask about scheduling a visit if is_verified is true AND has_scheduled is false AND 'trackUserMessage' indicates it.
 - After calling 'initiateScheduling', YOU MUST NOT generate any text response.
 - **IMPORTANT AGENT TRANSFER RULE:** If ANY tool you call (e.g., 'trackUserMessage', 'initiateScheduling') returns a 'destination_agent' field in its result (signaling an agent transfer), YOU MUST NOT generate any text response yourself. Your turn ends silently, and the system will activate the destination agent.
+
+SCHEDULING INTENT DETECTION:
+- You must carefully analyze user messages for scheduling intent. Examples include:
+  * "I want to schedule a visit"
+  * "Can I book a tour of this property?"
+  * "I'd like to see [property name] in person"
+  * "How do I arrange a site visit?"
+  * "When can I come to view the property?"
+  * "I'm interested in visiting this place"
+  * "Can I come see it tomorrow?"
+- When you detect ANY scheduling intent, IMMEDIATELY call 'initiateScheduling'. Do NOT wait for a precise phrasing or a button click.
+- If the user expresses interest in a specific property AND a scheduling intent, make sure to include the property_id when calling 'initiateScheduling'.
+- Pay attention to context - if the user has just been viewing details of a specific property and then expresses scheduling intent, assume they want to schedule for that property.
 `;
 };
 
@@ -343,19 +361,75 @@ const realEstateAgent: AgentConfig = {
   toolLogic: {
     // --- Internal Tools --- 
     trackUserMessage: async ({ message }: { message: string }) => {
-        const metadata = realEstateAgent.metadata;
+        const metadata = realEstateAgent.metadata as AgentMetadata; // Use the extended AgentMetadata
+        
+        // Check for flow_context first to give immediate confirmation message
+        if (metadata?.flow_context === 'from_full_scheduling') {
+            const confirmationMsg = `Great! Your visit to ${metadata.property_name || 'the property'} on ${metadata.selectedDate} at ${metadata.selectedTime} is confirmed, ${metadata.customer_name || 'there'}!`;
+            console.log("[trackUserMessage] Handling 'from_full_scheduling' context:", confirmationMsg);
+            // Clear the context to prevent re-triggering
+            if (realEstateAgent.metadata) {
+                delete (realEstateAgent.metadata as AgentMetadata).flow_context;
+                delete (realEstateAgent.metadata as AgentMetadata).selectedDate;
+                delete (realEstateAgent.metadata as AgentMetadata).selectedTime;
+                // property_name might be useful if it refers to the specifically scheduled one, or clear it if it was temporary
+                // delete (realEstateAgent.metadata as AgentMetadata).property_name; 
+            }
+            return { 
+                message: confirmationMsg, 
+                ui_display_hint: 'CHAT', 
+                // No destination_agent, the agent itself is speaking
+            };
+        } else if (metadata?.flow_context === 'from_direct_auth') {
+            const confirmationMsg = `You have been successfully verified, ${metadata.customer_name || 'there'}! How can I help you further?`;
+            console.log("[trackUserMessage] Handling 'from_direct_auth' context:", confirmationMsg);
+            if (realEstateAgent.metadata) {
+                delete (realEstateAgent.metadata as AgentMetadata).flow_context;
+            }
+            return { 
+                message: confirmationMsg, 
+                ui_display_hint: 'CHAT' 
+            };
+        }
+
+        // Proceed with existing trackUserMessage logic if no specific flow_context
         const is_verified = metadata?.is_verified ?? false;
         const has_scheduled = metadata?.has_scheduled ?? false;
 
-        // Check if this is a scheduling message by running scheduling regex directly
+        // Check for UI button scheduling message (keep existing logic for backward compatibility)
         const scheduleRegex = /^Yes, I'd like to schedule a visit for (.+?)[.!]?$/i;
         const scheduleRequestFromUiButton = message.startsWith("Yes, I'd like to schedule a visit for"); // More generic check for UI button
 
-        if (scheduleRequestFromUiButton) {
-            console.log("[trackUserMessage] Direct scheduling pattern match detected from UI button or similar phrasing");
+        // NEW: Better natural language scheduling intent detection
+        const schedulingIntentRegexes = [
+            /\b(schedule|book|arrange|set up|plan) .*?(visit|tour|viewing|showing|appointment|meeting)/i,
+            /\b(visit|tour|see|view) .*?(property|home|house|apartment|place) in person/i,
+            /\bcan i .*?(visit|tour|see|view|come)/i,
+            /\bwhen can i .*?(visit|tour|see|view|come)/i,
+            /\b(interested|want) .*?(visit|tour|see|view)/i,
+            /\bhow do i .*?(visit|tour|see|view)/i,
+            /\btake a look .*?(at|in person)/i,
+            /\bsite visit\b/i
+        ];
+
+        // Check if the message shows scheduling intent
+        const hasSchedulingIntent = schedulingIntentRegexes.some(regex => regex.test(message));
+
+        if (scheduleRequestFromUiButton || hasSchedulingIntent) {
+            console.log(`[trackUserMessage] Scheduling intent detected: "${message}"`);
             
-            const propertyNameMatch = message.match(scheduleRegex);
-            const propertyName = propertyNameMatch ? propertyNameMatch[1]?.trim() : metadata?.active_project || ((metadata as any)?.project_id_map ? Object.keys((metadata as any).project_id_map)[0] : null);
+            // For UI button, extract property name using the specific regex
+            let propertyName = null;
+            if (scheduleRequestFromUiButton) {
+                const propertyNameMatch = message.match(scheduleRegex);
+                propertyName = propertyNameMatch ? propertyNameMatch[1]?.trim() : null;
+            }
+            
+            // If no property name from button, use currently active property
+            if (!propertyName) {
+                propertyName = metadata?.active_project || 
+                               ((metadata as any)?.project_id_map ? Object.keys((metadata as any).project_id_map)[0] : null);
+            }
 
             console.log(`[trackUserMessage] Extracted/active property name for scheduling: ${propertyName}`);
             
@@ -377,7 +451,7 @@ const realEstateAgent: AgentConfig = {
                 return {
                     destination_agent: "scheduleMeeting",
                     property_id_to_schedule: propertyIdToSchedule,
-                    property_name_to_schedule: propertyName, // Pass name for greeting
+                    property_name: propertyName, // Updated from property_name_to_schedule to match expected field
                     silentTransfer: true,
                     message: null // CRITICAL for silent transfer
                 };
@@ -426,10 +500,47 @@ const realEstateAgent: AgentConfig = {
         const scheduleRegex = /^Yes, I'd like to schedule a visit for (.+?)[.!]?$/i;
         const scheduleMatch = message.match(scheduleRegex);
         
+        // NEW: Check for scheduling intent with property reference
+        const schedulingWithPropertyRegexes = [
+            /\b(schedule|book|arrange|set up|plan) .*?(visit|tour|viewing|showing) .*?for (\w+)/i,
+            /\b(visit|tour|see|view) .*?(\w+) .*?in person/i,
+            /\b(interested|want) to .*?(visit|tour|see|view) .*?(\w+)/i
+        ];
+        
+        let propertyName = null;
+        let isScheduleRequest = false;
+        
+        // Check explicit UI button format first
         if (scheduleMatch) {
-            const propertyName = scheduleMatch[1].trim();
-            console.log(`[detectPropertyInMessage] Detected scheduling request for: "${propertyName}"`);
-            
+            propertyName = scheduleMatch[1].trim();
+            isScheduleRequest = true;
+            console.log(`[detectPropertyInMessage] Detected UI button scheduling request for: "${propertyName}"`);
+        }
+        
+        // If no explicit match, check if it's a natural language scheduling request with property mention
+        if (!propertyName) {
+            for (const regex of schedulingWithPropertyRegexes) {
+                const match = message.match(regex);
+                if (match && match[3]) {
+                    // Extract potential property name and verify against known properties
+                    const potentialName = match[3].trim();
+                    // Check if this substring appears in any known property name
+                    const matchedProperty = project_names.find(p => 
+                        p.toLowerCase().includes(potentialName.toLowerCase()) || 
+                        potentialName.toLowerCase().includes(p.toLowerCase().replace(/\s+/g, ''))
+                    );
+                    
+                    if (matchedProperty) {
+                        propertyName = matchedProperty;
+                        isScheduleRequest = true;
+                        console.log(`[detectPropertyInMessage] Detected natural language scheduling for: "${propertyName}"`);
+                        break;
+                    }
+                }
+            }
+        }
+        
+        if (isScheduleRequest && propertyName) {
             // Find property ID if possible
             let propertyId = null;
             // Use type assertion to access these properties
@@ -455,6 +566,7 @@ const realEstateAgent: AgentConfig = {
           return { propertyDetected: false, message: "No properties available" };
         }
 
+        // Continue with regular property detection
         const normalizedMessage = message.toLowerCase().trim();
         let detectedProperty: string | null = null;
 
