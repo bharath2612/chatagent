@@ -35,8 +35,10 @@ STRICTLY FOLLOW THIS EXACT FLOW:
      * Wait for user confirmation (e.g., "Confirm", "Yes").
      * On confirmation, CALL TOOL: scheduleVisit.
    - If user_verification_status was "unverified":
-     * CALL TOOL: requestAuthentication. DO NOT add any explanation about authentication.
-     * Your turn ends immediately.
+     * IMMEDIATELY AND SILENTLY call requestAuthentication WITHOUT SAYING ANYTHING TO THE USER.
+     * Do not say "I need to verify your details" or "Let me transfer you" or anything similar.
+     * Your turn ends immediately after calling requestAuthentication.
+
 7. HANDLE scheduleVisit RESULT:
    * If scheduleVisit tool succeeds (returns booking_confirmed: true):
      * Confirm to user: "Great news! Your visit to ${propertyName} on [Selected Date] at [Selected Time] is confirmed! You'll receive details shortly."
@@ -52,7 +54,8 @@ CRITICAL RULES:
 - Follow the flow exactly.
 - IMPORTANT: The date selection and time selection are TWO SEPARATE STEPS. Respond after each step.
 - You MUST respond to date-only selections ("Selected Monday, June 3") by asking to select a time.
-- Let the authentication agent handle name/phone collection if needed.
+- NEVER mention transfers to authentication or verification. Just silently call requestAuthentication.
+- NEVER ask for permission or confirmation before transferring to authentication.
 - End your turn immediately after calling requestAuthentication or completeScheduling.
 - NEVER mention "transferring" to another agent or that another agent will handle verification.
 
@@ -199,13 +202,18 @@ const scheduleMeetingAgent: AgentConfig = {
       }
 
       if (!metadata.is_verified) {
-           console.warn("[scheduleVisit] User is not verified. This path should ideally be handled by agent calling requestAuthentication earlier based on getAvailableSlots.");
+           console.log("[scheduleVisit] User is not verified - automatically transferring to authentication agent");
+           // Directly return a transfer to authentication with silent transfer
            return {
-             error: "User not verified.",
-             destination_agent: "authentication", // As a fallback, still try to transfer
+             destination_agent: "authentication",
+             silentTransfer: true,
+             message: null,
              ui_display_hint: 'VERIFICATION_FORM',
-             message: "Before we confirm, I need to verify your details.",
-             silentTransfer: false,
+             came_from: 'scheduling',
+             property_id_to_schedule: property_id, // Preserve the property ID
+             property_name: propertyName, // Preserve the property name
+             selectedDate: (metadata as any)?.selectedDate, // Preserve the selected date if available
+             selectedTime: (metadata as any)?.selectedTime // Preserve the selected time if available
            };
       }
 
@@ -270,13 +278,21 @@ const scheduleMeetingAgent: AgentConfig = {
     },
     requestAuthentication: async () => {
       console.log("[scheduleMeeting.requestAuthentication] Transferring to authentication agent.");
+      const metadata = scheduleMeetingAgent.metadata;
+      const propertyName = (metadata as any)?.property_name || metadata?.active_project || "the property";
+      const property_id = (metadata as any)?.property_id_to_schedule || (metadata as any)?.lastReturnedPropertyId;
+      
       // Using silentTransfer: true and null message to make the transfer seamless
       return {
         destination_agent: "authentication",
         silentTransfer: true,
         message: null,
         ui_display_hint: 'VERIFICATION_FORM',
-        came_from: 'scheduling' 
+        came_from: 'scheduling',
+        property_id_to_schedule: property_id, // Preserve the property ID 
+        property_name: propertyName, // Preserve the property name
+        selectedDate: (metadata as any)?.selectedDate, // Preserve the selected date if available
+        selectedTime: (metadata as any)?.selectedTime // Preserve the selected time if available
       };
     },
     completeScheduling: async () => {
@@ -334,15 +350,18 @@ STRICTLY FOLLOW THIS EXACT FLOW AFTER 'getAvailableSlots' HAS RUN AND THE UI IS 
      * On confirmation, CALL TOOL: scheduleVisit. This tool will return a confirmation message and ui_display_hint: 'CHAT'.
      * After scheduleVisit succeeds, YOU MUST CALL 'completeScheduling' next. This tool handles the final silent transfer.
    - If "unverified":
-     * CALL TOOL: requestAuthentication. This tool returns a message and ui_display_hint: 'VERIFICATION_FORM', then transfers.
-     * Your turn ends immediately.
+     * IMMEDIATELY call requestAuthentication WITHOUT SAYING ANYTHING TO THE USER.
+     * Do not say "I need to verify your details" or "Let me transfer you" or anything similar.
+     * Your turn ends immediately after calling requestAuthentication.
 
 CRITICAL RULES:
 - ***YOUR VERY FIRST ACTION MUST BE TO CALL getAvailableSlots. DO NOT CALL ANY OTHER TOOL FIRST.***
 - 'getAvailableSlots' is ALWAYS first. Its result message and UI hint manage the initial display.
 - After user selects a DATE, you ask for TIME.
 - After user selects a TIME, you proceed to VERIFICATION check or CONFIRMATION.
-- If calling 'requestAuthentication', your turn ends.
+- NEVER mention transfers to authentication or verification processes to the user.
+- If user is unverified, IMMEDIATELY call requestAuthentication WITHOUT saying anything first.
+- Your response MUST BE EMPTY when calling requestAuthentication.
 - If 'scheduleVisit' is successful, you MUST immediately call 'completeScheduling'. 'completeScheduling' is silent and transfers back.
 
 LANGUAGE: Respond ONLY in ${language}.`
