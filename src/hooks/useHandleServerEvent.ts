@@ -93,6 +93,7 @@ export function useHandleServerEvent({
   
   // Add a new ref to track if we're currently transferring agents
   const isTransferringAgentRef = useRef(false);
+  const agentBeingTransferredToRef = useRef<string | null>(null); // Added ref
 
   const handleFunctionCall = async (functionCallParams: {
     name: string;
@@ -233,6 +234,7 @@ export function useHandleServerEvent({
           // For example, scheduleMeetingAgent immediately calls getAvailableSlots.
           // Consider if setActiveDisplayMode('CHAT') is needed here before transfer, or if new agent handles it.
           isTransferringAgentRef.current = true;
+          agentBeingTransferredToRef.current = fnResult.destination_agent; // Store the target agent
           
           const isSilent = fnResult.silentTransfer === true;
 
@@ -337,10 +339,44 @@ export function useHandleServerEvent({
                     sendClientEvent({ type: "response.cancel" }, "(cancelling before new response)");
                     // Short delay to ensure the cancellation is processed
                     setTimeout(() => {
-                      sendClientEvent({ type: "response.create" }, "(auto-trigger response after scheduling transfer)");
+                      // First send a simulated message to trigger the scheduling agent
+                      const simulatedMessageId = generateSafeId();
+                      console.log("[handleFunctionCall] Sending simulated message to scheduleMeeting agent: 'I want to schedule a visit'");
+                      
+                      sendClientEvent({
+                        type: "conversation.item.create", 
+                        item: {
+                          id: simulatedMessageId,
+                          type: "message",
+                          role: "user",
+                          content: [{ type: "input_text", text: "I want to schedule a visit" }]
+                        }
+                      }, "(simulated message for scheduling)");
+                      
+                      // Then trigger a response to that message
+                      setTimeout(() => {
+                        sendClientEvent({ type: "response.create" }, "(auto-trigger response after scheduling transfer)");
+                      }, 100);
                     }, 100);
                   } else {
-                    sendClientEvent({ type: "response.create" }, "(auto-trigger response after scheduling transfer)");
+                    // First send a simulated message to trigger the scheduling agent
+                    const simulatedMessageId = generateSafeId();
+                    console.log("[handleFunctionCall] Sending simulated message to scheduleMeeting agent: 'I want to schedule a visit'");
+                    
+                    sendClientEvent({
+                      type: "conversation.item.create", 
+                      item: {
+                        id: simulatedMessageId,
+                        type: "message",
+                        role: "user",
+                        content: [{ type: "input_text", text: "I want to schedule a visit" }]
+                      }
+                    }, "(simulated message for scheduling)");
+                    
+                    // Then trigger a response to that message
+                    setTimeout(() => {
+                      sendClientEvent({ type: "response.create" }, "(auto-trigger response after scheduling transfer)");
+                    }, 100);
                   }
                 }, 200); // Increased delay
               }
@@ -352,6 +388,12 @@ export function useHandleServerEvent({
                 // Special handling for authentication - preserve VERIFICATION_FORM display mode after transfer
                 const preserveVerificationForm = fnResult.ui_display_hint === 'VERIFICATION_FORM';
                 
+                // Always ensure we're in VERIFICATION_FORM mode
+                if (typeof setActiveDisplayMode === 'function') {
+                  console.log("[handleFunctionCall] Setting VERIFICATION_FORM mode for authentication agent");
+                  setActiveDisplayMode('VERIFICATION_FORM');
+                }
+                
                 setTimeout(() => {
                   // Before creating a new response, make sure there's no active one
                   if (hasActiveResponseRef.current) {
@@ -360,19 +402,55 @@ export function useHandleServerEvent({
                     // Short delay to ensure the cancellation is processed
                     setTimeout(() => {
                       // For authentication, set the UI mode explicitly again right before sending response
-                      if (preserveVerificationForm) {
+                      if (preserveVerificationForm || true) {
                         console.log("[handleFunctionCall] Preserving VERIFICATION_FORM mode after authentication transfer");
                         setActiveDisplayMode('VERIFICATION_FORM');
                       }
-                      sendClientEvent({ type: "response.create" }, "(auto-trigger response after authentication transfer)");
+                      
+                      // First send a simulated message to trigger the authentication agent
+                      const simulatedMessageId = generateSafeId();
+                      console.log("[handleFunctionCall] Sending simulated message to authentication agent: 'I need to verify my details'");
+                      
+                      sendClientEvent({
+                        type: "conversation.item.create", 
+                        item: {
+                          id: simulatedMessageId,
+                          type: "message",
+                          role: "user",
+                          content: [{ type: "input_text", text: "I need to verify my details" }]
+                        }
+                      }, "(simulated message for authentication)");
+                      
+                      // Then trigger a response to that message
+                      setTimeout(() => {
+                        sendClientEvent({ type: "response.create" }, "(auto-trigger response after authentication transfer)");
+                      }, 100);
                     }, 100);
                   } else {
                     // For authentication, set the UI mode explicitly again right before sending response
-                    if (preserveVerificationForm) {
+                    if (preserveVerificationForm || true) {
                       console.log("[handleFunctionCall] Preserving VERIFICATION_FORM mode after authentication transfer");
                       setActiveDisplayMode('VERIFICATION_FORM');
                     }
-                    sendClientEvent({ type: "response.create" }, "(auto-trigger response after authentication transfer)");
+                    
+                    // First send a simulated message to trigger the authentication agent
+                    const simulatedMessageId = generateSafeId();
+                    console.log("[handleFunctionCall] Sending simulated message to authentication agent: 'I need to verify my details'");
+                    
+                    sendClientEvent({
+                      type: "conversation.item.create", 
+                      item: {
+                        id: simulatedMessageId,
+                        type: "message",
+                        role: "user",
+                        content: [{ type: "input_text", text: "I need to verify my details" }]
+                      }
+                    }, "(simulated message for authentication)");
+                    
+                    // Then trigger a response to that message
+                    setTimeout(() => {
+                      sendClientEvent({ type: "response.create" }, "(auto-trigger response after authentication transfer)");
+                    }, 100);
                   }
                 }, 200);
               }
@@ -783,17 +861,28 @@ export function useHandleServerEvent({
       case "response.done": {
         // When a response is completed, clear the active response flag
         hasActiveResponseRef.current = false;
-        console.log(`[Server Event Hook] Response done. Agent: ${selectedAgentName}. Transferring flag before check: ${isTransferringAgentRef.current}`);
+        const currentAgentNameInResponse = selectedAgentName; // Capture at event time
+        console.log(`[Server Event Hook] Response done. Agent: ${currentAgentNameInResponse}. Transferring flag: ${isTransferringAgentRef.current}, Target: ${agentBeingTransferredToRef.current}`);
 
         if (isTransferringAgentRef.current) {
-          console.log(`[Server Event Hook] This response.done is for agent ${selectedAgentName} which just initiated a transfer. Clearing flag and stopping its tool processing.`);
-          isTransferringAgentRef.current = false; // Clear the flag, transfer is now in effect for the next agent.
-          // Any new tool calls in serverEvent.response.output here were from the OLD agent; skip them.
-          break; 
+          if (currentAgentNameInResponse === agentBeingTransferredToRef.current) {
+            // This is the NEW agent's first response. It's now taking over.
+            console.log(`[Server Event Hook] New agent ${currentAgentNameInResponse} completing its first response. Transfer flag will be cleared. Tools will be processed.`);
+            isTransferringAgentRef.current = false;
+            agentBeingTransferredToRef.current = null;
+            // Fall through to process tools for the new agent
+          } else {
+            // This is the OLD agent's response completing AFTER a transfer was decided.
+            console.log(`[Server Event Hook] Old agent ${currentAgentNameInResponse} response done after transfer to ${agentBeingTransferredToRef.current} initiated. Stopping tool processing for old agent.`);
+            isTransferringAgentRef.current = false; 
+            agentBeingTransferredToRef.current = null;
+            break; // Skip tool processing for the old agent
+          }
         }
 
+        // Tool processing logic (will run for new agent on its first response.done, or normally for non-transfer scenarios)
         // If not transferring, process tool calls for the CURRENT agent.
-        console.log(`[Server Event Hook] Response done for agent ${selectedAgentName}. Transfer flag is false. Processing output tools for this agent.`);
+        console.log(`[Server Event Hook] Processing tools for agent ${currentAgentNameInResponse} (Transfer flag is now ${isTransferringAgentRef.current})`);
         if (serverEvent.response?.output) {
           serverEvent.response.output.forEach((outputItem) => {
             if (outputItem.type === "function_call" && outputItem.name && outputItem.arguments) {
@@ -911,6 +1000,7 @@ export function useHandleServerEvent({
       setPropertyListData,
       setSelectedPropertyDetails,
       setPropertyGalleryData,
+      // agentBeingTransferredToRef is a ref, its direct changes don't trigger useEffect
   ]);
 
   const canCreateResponse = () => !hasActiveResponseRef.current && !isTransferringAgentRef.current;

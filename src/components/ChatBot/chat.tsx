@@ -478,7 +478,8 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
     // Stop any current response/audio first
     stopCurrentResponse(sendClientEvent);
 
-    const scheduleMessage = `Yes, I'd like to schedule a visit for ${property.name}.`;
+    // Updated message with more scheduling-specific wording
+    const scheduleMessage = `Yes, I'd like to schedule a visit for ${property.name}. Please help me book an appointment.`;
     const userMessageId = generateSafeId();
     
     // Send events FIRST while the component state related to the modal is stable
@@ -629,10 +630,17 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
                         }
                         
                         // Always show time slots when we get them
+                        console.log("[UI] Setting showTimeSlots to TRUE");
                         setShowTimeSlots(true);
                         
                         // CRITICAL FIX: Set the display mode to SCHEDULING_FORM to ensure the UI shows the form
+                        console.log("[UI] CRITICAL: Setting activeDisplayMode to SCHEDULING_FORM");
                         setActiveDisplayMode('SCHEDULING_FORM');
+                        
+                        // Log UI state for debugging
+                        console.log("[UI] Current state check - activeDisplayMode:", 'SCHEDULING_FORM', 
+                            "showTimeSlots:", true, 
+                            "selectedProperty:", selectedProperty || outputData.property_id);
                         
                         // Set verification screen state based on verification status
                         // We'll show this later when the user selects a time
@@ -647,9 +655,11 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
                         }
                         
                         propertiesHandledLocally = true; // Mark as handled
+                    } else {
+                        console.error("[handleServerEvent] getAvailableSlots response has no slots data!");
                     }
                 } catch (e) {
-                    console.warn("[handleServerEvent] Error parsing getAvailableSlots output:", e);
+                    console.error("[handleServerEvent] Error parsing getAvailableSlots output:", e);
                 }
             }
         } else if (functionName === "scheduleVisit") {
@@ -1185,8 +1195,18 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
               fetchOrgMetadata().then(() => {
                   // Check if still connected *after* async fetch completes
                   if (sessionStatus === 'CONNECTED') { 
-                       // Now update the session and trigger the initial response
-                       updateSession(true); 
+                       // Determine if an initial response should be triggered by a simulated message
+                       // Agents like 'scheduleMeeting' and 'authentication' trigger their own first actions
+                       // (e.g., getAvailableSlots or a verification prompt) without needing a user message.
+                       const agentAutoTriggersFirstAction = 
+                           selectedAgentName === 'scheduleMeeting' || 
+                           selectedAgentName === 'authentication';
+
+                       // If the agent doesn't auto-trigger, then we send a simulated "hi" to get it started.
+                       const shouldSendSimulatedHi = !agentAutoTriggersFirstAction;
+                       
+                       console.log(`[Effect] Updating session. Agent: ${selectedAgentName}, Auto-triggers: ${agentAutoTriggersFirstAction}, Sending simulated 'hi': ${shouldSendSimulatedHi}`);
+                       updateSession(shouldSendSimulatedHi); 
                        // Mark setup truly complete *after* successful updateSession
                        // initialSessionSetupDoneRef.current = true; // Already set above
                        console.log("[Effect] Initial session setup complete.");
@@ -1448,6 +1468,14 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
   //     inputVisible, 
   //     micMuted 
   // });
+
+  console.log("[Render] TimePick and UI state:", {
+    activeDisplayMode,
+    showTimeSlots,
+    hasSelectedProperty: !!selectedProperty,
+    isVerifying,
+    propertyId: selectedProperty?.id
+  });
 
   // Add handleTimeSlotSelection function to handle slot selection
   const handleTimeSlotSelection = useCallback((date: string, time: string) => {

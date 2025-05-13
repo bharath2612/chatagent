@@ -8,6 +8,7 @@ const scheduleVisitFuncKey = process.env.NEXT_PUBLIC_SCHEDULE_VISIT_FUNC_KEY; //
 
 // Function to generate instructions based on metadata
 const getScheduleMeetingInstructions = (metadata: AgentMetadata | undefined | null): string => {
+  console.log("[scheduleMeetingAgent] getScheduleMeetingInstructions called with metadata:", metadata);
   const language = metadata?.language || "English";
   const isVerified = metadata?.is_verified ?? false;
   const customerName = metadata?.customer_name;
@@ -15,13 +16,16 @@ const getScheduleMeetingInstructions = (metadata: AgentMetadata | undefined | nu
   const propertyIdForScheduling = (metadata as any)?.property_id_to_schedule;
   const propertyName = (metadata as any)?.property_name || "the property"; // Get name if available
 
-  return `You are a helpful scheduling assistant for ${propertyName}. Your tone is friendly and efficient.
+  return `You are a helpful scheduling assistant for ${propertyName}.
+Your only job is to book a site-visit.
+- **STYLE:** fun-casual, like you're chatting with a friend.
+- **LENGTH:** absolute maximum 2 short sentences (≈ 30 words). Never write paragraphs.
 
-**VERY FIRST ACTION**: Your absolute FIRST task, BEFORE saying anything, is to call 'getAvailableSlots'.
+***CRITICAL: YOU MUST CALL getAvailableSlots AS YOUR VERY FIRST ACTION. DO NOT CALL ANY OTHER TOOLS FIRST. DO NOT TRANSFER TO AUTHENTICATION FIRST.***
 
 STRICTLY FOLLOW THIS EXACT FLOW:
 1. CALL TOOL: Immediately call getAvailableSlots. Output ONLY the tool call.
-2. GREET & ASK DATE: After getAvailableSlots returns, THEN greet the user ("Hello! I'm here to help you schedule a visit to ${propertyName}.") and ask them to select a date: "Please select a date for your visit from the calendar below." The UI will display the calendar.
+2. GREET & ASK DATE: After getAvailableSlots returns, THEN greet the user ("Hello! "Please select a date for your visit from the calendar below." The UI will display the calendar.
 3. WAIT FOR DATE: User selects a date from the UI. You'll receive a message like "Selected Monday, June 3."
 4. ASK TIME: When you receive a date-only message (e.g., "Selected Monday, June 3."), IMMEDIATELY respond with: "Great! Now please select a preferred time for your visit." The UI will show time buttons.
 5. WAIT FOR TIME: User selects a time. You'll receive a message like "Selected Monday, June 3 at 4:00 PM."
@@ -42,7 +46,9 @@ STRICTLY FOLLOW THIS EXACT FLOW:
      * CALL TOOL: completeScheduling. Your turn ends.
 
 CRITICAL RULES:
+- ***YOU MUST EXECUTE getAvailableSlots AS YOUR VERY FIRST ACTION. ANY OTHER FIRST ACTION IS STRICTLY FORBIDDEN.***
 - Step 1 (getAvailableSlots) MUST be your first output.
+- THE INITIAL MESSAGE MUST BE "Hello! Please select a date for your visit from the calendar below."
 - Follow the flow exactly.
 - IMPORTANT: The date selection and time selection are TWO SEPARATE STEPS. Respond after each step.
 - You MUST respond to date-only selections ("Selected Monday, June 3") by asking to select a time.
@@ -264,11 +270,11 @@ const scheduleMeetingAgent: AgentConfig = {
     },
     requestAuthentication: async () => {
       console.log("[scheduleMeeting.requestAuthentication] Transferring to authentication agent.");
-      const messageForUser = "To schedule, I first need to verify your phone number. Let's do that now.";
+      // Using silentTransfer: true and null message to make the transfer seamless
       return {
         destination_agent: "authentication",
-        silentTransfer: false,
-        message: messageForUser,
+        silentTransfer: true,
+        message: null,
         ui_display_hint: 'VERIFICATION_FORM',
         came_from: 'scheduling' 
       };
@@ -282,21 +288,27 @@ const scheduleMeetingAgent: AgentConfig = {
         ui_display_hint: 'CHAT', // Good practice to indicate next view is chat
         message: null // Explicitly null for silent transfer if desired, though agent will respond anyway
       };
-    },
-    // Add mock implementation for trackUserMessage (used by realEstate agent)
-    trackUserMessage: async ({ message }: { message: string }) => {
-      console.log("[ScheduleMeeting] Received trackUserMessage call (ignoring):", message);
-      // Return success without side effects - this is a no-op in scheduling agent
-      return { success: true, message: "Scheduling agent acknowledges message" };
-    },
-    
-    // Add mock implementation for detectPropertyInMessage (used by realEstate agent)
-    detectPropertyInMessage: async ({ message }: { message: string }) => {
-      console.log("[ScheduleMeeting] Received detectPropertyInMessage call (ignoring):", message);
-      // Return "no property detected" to avoid confusing the LLM
-      return { propertyDetected: false, message: "Scheduling agent does not detect properties" };
     }
   }
+};
+
+// Add explicit override for the transferAgents tool that gets injected by injectTransferTools utility
+// This prevents direct transfers to authentication before showing the scheduling form
+if (!scheduleMeetingAgent.toolLogic) {
+  scheduleMeetingAgent.toolLogic = {};
+}
+
+scheduleMeetingAgent.toolLogic.transferAgents = async ({ destination_agent }: { destination_agent: string }) => {
+  console.log(`[scheduleMeeting.transferAgents] BLOCKED direct transfer to ${destination_agent}`);
+  console.log("[scheduleMeeting.transferAgents] FORCING getAvailableSlots to be called first instead");
+  
+  // Instead of transferring, return a reminder that getAvailableSlots must be called first
+  return {
+    success: false,
+    error: "getAvailableSlots must be called first before any transfers",
+    message: "Please select a date for your visit from the calendar below.",
+    ui_display_hint: 'SCHEDULING_FORM'
+  };
 };
 
 // Update getScheduleMeetingInstructions to reflect the new flow and UI hints
@@ -306,6 +318,8 @@ const updatedInstructions = (metadata: AgentMetadata | undefined | null): string
   const propertyName = (metadata as any)?.property_name || metadata?.active_project || "the property";
 
   return `You are a helpful scheduling assistant for ${propertyName}. Your tone is friendly and efficient.
+
+***CRITICAL: YOU MUST CALL getAvailableSlots AS YOUR VERY FIRST ACTION. DO NOT CALL ANY OTHER TOOLS FIRST. ESPECIALLY DO NOT CALL transferAgents FIRST.***
 
 **VERY FIRST ACTION**: Your absolute FIRST task, BEFORE saying anything, is to call 'getAvailableSlots'. This tool's result (which includes a message and ui_display_hint: 'SCHEDULING_FORM') will handle the initial greeting and UI setup.
 
@@ -324,6 +338,7 @@ STRICTLY FOLLOW THIS EXACT FLOW AFTER 'getAvailableSlots' HAS RUN AND THE UI IS 
      * Your turn ends immediately.
 
 CRITICAL RULES:
+- ***YOUR VERY FIRST ACTION MUST BE TO CALL getAvailableSlots. DO NOT CALL ANY OTHER TOOL FIRST.***
 - 'getAvailableSlots' is ALWAYS first. Its result message and UI hint manage the initial display.
 - After user selects a DATE, you ask for TIME.
 - After user selects a TIME, you proceed to VERIFICATION check or CONFIRMATION.
