@@ -114,6 +114,12 @@ const scheduleMeetingAgent: AgentConfig = {
       description: "Transfers back to the real estate agent after successful booking confirmation.",
       parameters: { type: "object", properties: {}, required: [] },
     },
+    {
+      type: "function",
+      name: "getUserVerificationStatus", // Adding this tool to prevent "tool not found" errors
+      description: "INTERNAL: Gets the current verification status of the user.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
   ],
   toolLogic: {
     getAvailableSlots: async ({ property_id }: { property_id: string }) => {
@@ -322,7 +328,22 @@ const scheduleMeetingAgent: AgentConfig = {
         selectedTime: metadata?.selectedTime,
         flow_context: 'from_full_scheduling' // Add the flag for realEstateAgent
       };
-    }
+    },
+    // Mock implementation to prevent errors
+    getUserVerificationStatus: async () => {
+      console.log("[scheduleMeeting.getUserVerificationStatus] Checking verification status");
+      const metadata = scheduleMeetingAgent.metadata;
+      const isVerified = metadata?.is_verified === true;
+      
+      return {
+        is_verified: isVerified,
+        user_verification_status: isVerified ? "verified" : "unverified",
+        message: isVerified ? 
+          "The user is already verified." : 
+          "The user is not verified. Please use requestAuthentication to transfer to the authentication agent.",
+        ui_display_hint: 'SCHEDULING_FORM' // Maintain the current UI
+      };
+    },
   }
 };
 
@@ -355,6 +376,8 @@ const updatedInstructions = (metadata: AgentMetadata | undefined | null): string
 
 ***CRITICAL: YOU MUST CALL getAvailableSlots AS YOUR VERY FIRST ACTION. DO NOT CALL ANY OTHER TOOLS FIRST. ESPECIALLY DO NOT CALL transferAgents FIRST.***
 
+***IMPORTANT: YOU DO NOT HAVE ACCESS TO THE initiateScheduling TOOL. This tool only exists in the realEstate agent.***
+
 **VERY FIRST ACTION**: Your absolute FIRST task, BEFORE saying anything, is to call 'getAvailableSlots'. This tool's result (which includes a message and ui_display_hint: 'SCHEDULING_FORM') will handle the initial greeting and UI setup.
 
 STRICTLY FOLLOW THIS EXACT FLOW AFTER 'getAvailableSlots' HAS RUN AND THE UI IS IN SCHEDULING_FORM:
@@ -371,6 +394,12 @@ STRICTLY FOLLOW THIS EXACT FLOW AFTER 'getAvailableSlots' HAS RUN AND THE UI IS 
      * IMMEDIATELY call requestAuthentication WITHOUT SAYING ANYTHING TO THE USER.
      * Do not say "I need to verify your details" or "Let me transfer you" or anything similar.
      * Your turn ends immediately after calling requestAuthentication.
+
+AVAILABLE TOOLS: You have access to these tools ONLY:
+- getAvailableSlots (MUST BE YOUR FIRST CALL)
+- scheduleVisit (used after date and time are selected and user is verified)
+- requestAuthentication (used if user is unverified)
+- completeScheduling (used after successful scheduling)
 
 CRITICAL RULES:
 - ***YOUR VERY FIRST ACTION MUST BE TO CALL getAvailableSlots. DO NOT CALL ANY OTHER TOOL FIRST.***

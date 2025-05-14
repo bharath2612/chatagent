@@ -369,11 +369,12 @@ const realEstateAgent: AgentConfig = {
             console.log("[trackUserMessage] Handling 'from_full_scheduling' context:", confirmationMsg);
             // Clear the context to prevent re-triggering
             if (realEstateAgent.metadata) {
-                delete (realEstateAgent.metadata as AgentMetadata).flow_context;
-                delete (realEstateAgent.metadata as AgentMetadata).selectedDate;
-                delete (realEstateAgent.metadata as AgentMetadata).selectedTime;
-                // property_name might be useful if it refers to the specifically scheduled one, or clear it if it was temporary
-                // delete (realEstateAgent.metadata as AgentMetadata).property_name; 
+                (realEstateAgent.metadata as AgentMetadata).flow_context = undefined; // Clear context
+                (realEstateAgent.metadata as AgentMetadata).selectedDate = undefined;
+                (realEstateAgent.metadata as AgentMetadata).selectedTime = undefined;
+                // (realEstateAgent.metadata as AgentMetadata).property_name = undefined; // Keep if it's the scheduled one, or if it was set for this specific schedule
+                (realEstateAgent.metadata as AgentMetadata).has_scheduled = true;
+                (realEstateAgent.metadata as AgentMetadata).is_verified = true; // Ensure user is marked verified
             }
             return { 
                 message: confirmationMsg, 

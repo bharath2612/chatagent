@@ -20,6 +20,15 @@ const getAuthInstructions = (metadata: AgentMetadata | undefined | null) => {
 
 ***IMPORTANT: YOUR VERY FIRST MESSAGE MUST ALWAYS BE EXACTLY: "Welcome! To continue, please fill out the form below." DO NOT SAY ANYTHING ELSE IN YOUR FIRST MESSAGE.***
 
+**AVAILABLE TOOLS: You have access to these tools ONLY:**
+- submitPhoneNumber (used to submit the user's phone number and trigger an OTP)
+- verifyOTP (used to verify the OTP code entered by the user)
+
+***IMPORTANT: You DO NOT have access to these tools that other agents might use:***
+- completeScheduling (only available to scheduleMeeting agent)
+- initiateScheduling (only available to realEstate agent)
+- getAvailableSlots (only available to scheduleMeeting agent)
+
 **Current Status**:
 - Came from: ${cameFrom}
 ${customerName ? `- User Name Provided: ${customerName}` : `- User Name: Not yet provided`}
@@ -341,26 +350,32 @@ const authenticationAgent: AgentConfig = {
           const metadataAny = authenticationAgent.metadata as any; // Cache for convenience
 
           let destinationAgentName: string;
+          // Initialize transferData with common fields for successful verification
           let transferData: any = {
             is_verified: true,
             customer_name: metadataAny?.customer_name || "",
-            phone_number: effective_phone_number, // Pass the verified phone
-            silentTransfer: true,
-            ui_display_hint: 'CHAT',
-            message: "Thank you for verifying!", // Agent says this briefly before silent transfer
+            phone_number: effective_phone_number,
+            silentTransfer: true, // Default to silent for cleaner UX
+            ui_display_hint: 'CHAT', // Default, realEstateAgent will control UI via its context handling
+            message: null, // Default to null, realEstateAgent will provide user-facing messages
           };
 
           if (cameFrom === 'scheduling') {
-            destinationAgentName = 'scheduleMeeting';
-            // Pass back all scheduling related data it might have received
+            destinationAgentName = 'realEstate'; // Transfer to realEstate for final confirmation
+            transferData.flow_context = 'from_full_scheduling'; // Key for realEstateAgent
+            
+            // Add all scheduling-related data needed by realEstateAgent for its confirmation message
             transferData.property_id_to_schedule = metadataAny?.property_id_to_schedule;
             transferData.property_name = metadataAny?.property_name;
             transferData.selectedDate = metadataAny?.selectedDate;
             transferData.selectedTime = metadataAny?.selectedTime;
-            // No specific flow_context needed here as scheduleMeetingAgent will set it later
-          } else {
+            transferData.has_scheduled = true; // Mark as scheduled, verification was the last step
+            
+          } else { // Came from realEstateAgent directly for general auth or other flows
             destinationAgentName = 'realEstate';
             transferData.flow_context = 'from_direct_auth'; // Flag for realEstateAgent
+            // is_verified, customer_name, phone_number are already in transferData
+            // has_scheduled is not applicable or should remain as per existing metadata state (likely false/undefined)
           }
           
           console.log(`[verifyOTP] Preparing transfer to: ${destinationAgentName} with data:`, transferData);
@@ -368,13 +383,16 @@ const authenticationAgent: AgentConfig = {
           // IMPORTANT: Update agent's own metadata before returning transfer info
           if (authenticationAgent.metadata) {
             authenticationAgent.metadata.is_verified = true;
+            if (cameFrom === 'scheduling') { // If scheduling flow, also mark as scheduled in auth agent's own state
+                (authenticationAgent.metadata as any).has_scheduled = true; 
+            }
             // customer_name and phone_number should have been set by submitPhoneNumber or already exist
           }
 
           return {
-            verified: true,
+            verified: true, // This is the primary result of verifyOTP tool itself
             destination_agent: destinationAgentName,
-            ...transferData
+            ...transferData // Spread all other necessary fields for the transfer
           };
         } else {
           const errorMsg = data.error || data.message || "Invalid OTP or verification failed.";
@@ -404,6 +422,15 @@ const authenticationAgent: AgentConfig = {
     detectPropertyInMessage: async ({ message }: { message: string }) => {
       console.log("[Authentication] Received detectPropertyInMessage call (ignoring):", message);
       return { propertyDetected: false, message: "Authentication agent does not detect properties", ui_display_hint: 'CHAT' };
+    },
+    // Add mock implementation for completeScheduling
+    completeScheduling: async () => {
+      console.log("[Authentication] Received completeScheduling call (redirecting to verifyOTP)");
+      return {
+        error: "The authentication agent cannot complete scheduling directly. Please use verifyOTP to complete the authentication process.",
+        message: "Please complete the verification process first.",
+        ui_display_hint: 'VERIFICATION_FORM' // Maintain verification form
+      };
     }
   }
 };
