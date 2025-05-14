@@ -1,6 +1,6 @@
 "use client";
 
-import { ServerEvent, SessionStatus, AgentConfig, TranscriptItem } from "@/types/types"; // Adjusted import path, added TranscriptItem
+import { ServerEvent, SessionStatus, AgentConfig, TranscriptItem, AgentMetadata } from "@/types/types"; // Adjusted import path, added TranscriptItem and AgentMetadata
 import { useRef, useEffect, useState } from "react";
 import { v4 as uuidv4 } from "uuid";
 
@@ -33,7 +33,8 @@ type ActiveDisplayMode =
   | 'IMAGE_GALLERY' 
   | 'SCHEDULING_FORM'
   | 'VERIFICATION_FORM'
-  | 'OTP_FORM';
+  | 'OTP_FORM'
+  | 'VERIFICATION_SUCCESS';
 
 interface PropertyGalleryData {
   propertyName: string;
@@ -47,6 +48,7 @@ export interface UseHandleServerEventParams {
   selectedAgentConfigSet: AgentConfig[] | null;
   sendClientEvent: (eventObj: any, eventNameSuffix?: string) => void;
   setSelectedAgentName: (name: string) => void;
+  setAgentMetadata: (metadata: AgentMetadata | null) => void;
 
   // Transcript state and functions passed from component
   transcriptItems: TranscriptItem[];
@@ -70,6 +72,7 @@ export function useHandleServerEvent({
   selectedAgentConfigSet,
   sendClientEvent,
   setSelectedAgentName,
+  setAgentMetadata,
   // Destructure transcript functions from params
   transcriptItems,
   addTranscriptMessage,
@@ -215,13 +218,58 @@ export function useHandleServerEvent({
             console.log("[handleFunctionCall] VERIFICATION_FORM hint.");
           } else if (fnResult.ui_display_hint === 'OTP_FORM') {
             console.log("[handleFunctionCall] OTP_FORM hint.");
+          } else if (fnResult.ui_display_hint === 'VERIFICATION_SUCCESS') {
+            console.log("[handleFunctionCall] VERIFICATION_SUCCESS hint - showing success message before CHAT");
+            // Show success message, then after delay transition to CHAT
+            // Don't clear this UI immediately, it will be handled with delay
+            setTimeout(() => {
+              console.log("[handleFunctionCall] Transitioning from VERIFICATION_SUCCESS to CHAT");
+              setActiveDisplayMode('CHAT');
+            }, 3000); // Show success message for 3 seconds 
           }
           // If the mode is CHAT, data was already cleared.
         } else if (fnResult && !fnResult.destination_agent) {
           // If no specific UI hint, but not a transfer, default to CHAT to ensure messages are visible.
           // Avoids getting stuck on a previous UI if a tool runs silently or only returns a message.
           console.log("[handleFunctionCall] No UI hint from tool, defaulting to CHAT display mode.");
-          setActiveDisplayMode('CHAT');
+          
+          // If this is a verification result, delay setting activeDisplayMode back to CHAT to 
+          // allow verification success UI to be visible longer
+          if (fnResult && fnResult.verified === true) {
+            console.log("[handleFunctionCall] Delaying CHAT mode after successful verification");
+            setTimeout(() => {
+              // If there's scheduling data, ensure we process it correctly
+              const metadataAny = currentAgent.metadata as any;
+              if (metadataAny?.selectedDate && metadataAny?.selectedTime && metadataAny?.property_name) {
+                console.log("[handleFunctionCall] Found scheduling data after verification");
+                // Call completeScheduling to show the confirmation message
+                const toolFunction = currentAgent?.toolLogic?.completeScheduling;
+                if (typeof toolFunction === 'function') {
+                  console.log("[handleFunctionCall] Calling completeScheduling to show booking confirmation");
+                  toolFunction({}, transcriptItems || []).then((result: any) => {
+                    if (result.message) {
+                      const newMessageId = generateSafeId();
+                      sendClientEvent({
+                        type: "conversation.item.create", 
+                        item: {
+                          id: newMessageId,
+                          type: "message",
+                          role: "assistant",
+                          content: [{ type: "text", text: result.message }]
+                        }
+                      }, "(scheduling confirmation message)");
+                    }
+                  });
+                }
+              }
+              
+              // Finally transition to CHAT mode
+              setActiveDisplayMode('CHAT');
+            }, 3000); // Show verification success for 3 seconds
+          } else {
+            setActiveDisplayMode('CHAT');
+          }
+          
           setPropertyListData(null);
           setSelectedPropertyDetails(null);
           setPropertyGalleryData(null);
@@ -246,36 +294,33 @@ export function useHandleServerEvent({
           );
 
           if (newAgentConfig) {
-            if (currentAgent.metadata) {
-               // Create a clean copy for the new agent, merge specific fields passed back
-              newAgentConfig.metadata = { ...(currentAgent.metadata || {}) }; 
-              // Always preserve critical IDs
-              if (currentAgent.metadata.chatbot_id) newAgentConfig.metadata.chatbot_id = currentAgent.metadata.chatbot_id;
-              if (currentAgent.metadata.org_id) newAgentConfig.metadata.org_id = currentAgent.metadata.org_id;
-              if (currentAgent.metadata.session_id) newAgentConfig.metadata.session_id = currentAgent.metadata.session_id;
+            const cameFromContext = fnResult.came_from || currentAgent.metadata?.came_from || currentAgent.name;
+
+            // Start with the default metadata from the new agent's config, then layer existing, then fnResult
+            let newAgentPreparedMetadata: AgentMetadata = {
+              ...(newAgentConfig.metadata || {}), // Base: New agent's default metadata
+              ...(currentAgent.metadata || {}),   // Layer: Old agent's metadata (for continuity of session/org IDs etc.)
               
-              // Merge fields from fnResult (tool output that triggered transfer)
-              // These fields are crucial for context in the new agent
-              if (fnResult.is_verified !== undefined) newAgentConfig.metadata.is_verified = fnResult.is_verified;
-              if (fnResult.customer_name) newAgentConfig.metadata.customer_name = fnResult.customer_name;
-              if (fnResult.phone_number) newAgentConfig.metadata.phone_number = fnResult.phone_number;
-              if (fnResult.has_scheduled !== undefined) newAgentConfig.metadata.has_scheduled = fnResult.has_scheduled;
-              if (fnResult.property_id_to_schedule) (newAgentConfig.metadata as any).property_id_to_schedule = fnResult.property_id_to_schedule;
-              if (fnResult.property_name) (newAgentConfig.metadata as any).property_name = fnResult.property_name;
-              if (fnResult.selectedDate) (newAgentConfig.metadata as any).selectedDate = fnResult.selectedDate;
-              if (fnResult.selectedTime) (newAgentConfig.metadata as any).selectedTime = fnResult.selectedTime;
-              if (fnResult.flow_context) (newAgentConfig.metadata as any).flow_context = fnResult.flow_context;
-              if (fnResult.came_from) newAgentConfig.metadata.came_from = fnResult.came_from; // Preserve if set by tool
+              // Ensure critical IDs are robustly determined, preferring current, then newConfig default, then generated
+              chatbot_id: currentAgent.metadata?.chatbot_id || newAgentConfig.metadata?.chatbot_id,
+              org_id: currentAgent.metadata?.org_id || newAgentConfig.metadata?.org_id,
+              session_id: currentAgent.metadata?.session_id || newAgentConfig.metadata?.session_id || generateSafeId(),
 
-              // Add metadata to indicate where the agent came from (for return path), if not already set by tool
-              if (!newAgentConfig.metadata.came_from && currentAgent.name) {
-                newAgentConfig.metadata.came_from = currentAgent.name;
-                console.log(`[handleFunctionCall] Set came_from=${currentAgent.name} in metadata`);
-              }
+              ...(fnResult as any), // Layer: Fields from the transferring tool's result (takes highest precedence for its specific fields)
+              
+              came_from: cameFromContext, // Explicitly set came_from
+            };
 
-              console.log("[handleFunctionCall] Final merged metadata for new agent:", newAgentConfig.metadata);
-            }
+            // Clean up transfer-control fields from the final metadata object
+            delete (newAgentPreparedMetadata as any).destination_agent;
+            delete (newAgentPreparedMetadata as any).silentTransfer;
+            delete (newAgentPreparedMetadata as any).error; 
+            delete (newAgentPreparedMetadata as any).success; // also remove general success flags if they exist from tool result
+
+            newAgentConfig.metadata = newAgentPreparedMetadata;
             
+            console.log("[handleFunctionCall] Final merged metadata for new agent:", newAgentConfig.metadata);
+
             // First cancel any active response to avoid the "conversation_already_has_active_response" error
             if (hasActiveResponseRef.current) {
               console.log("[handleFunctionCall] Cancelling active response before transfer");
@@ -287,6 +332,9 @@ export function useHandleServerEvent({
             
             // Update the agent state in the parent component
             setSelectedAgentName(fnResult.destination_agent);
+            if (newAgentConfig?.metadata) {
+              setAgentMetadata(newAgentConfig.metadata);
+            }
 
             // ALL transfers should be silent by default
             let silentTransfer = isSilent || true; // Force silent transfers - ALL agent transfers should be silent
@@ -325,7 +373,7 @@ export function useHandleServerEvent({
                     setTimeout(() => {
                       // First send a simulated message to trigger the scheduling agent
                       const simulatedMessageId = generateSafeId();
-                      console.log("[handleFunctionCall] Sending simulated message to scheduleMeeting agent: 'I want to schedule a visit'");
+                      console.log("[handleFunctionCall] Sending simulated message to scheduleMeeting agent: 'Hello, I need help with booking a visit. Please show me available dates.'");
                       
                       sendClientEvent({
                         type: "conversation.item.create", 
@@ -333,7 +381,7 @@ export function useHandleServerEvent({
                           id: simulatedMessageId,
                           type: "message",
                           role: "user",
-                          content: [{ type: "input_text", text: "I want to schedule a visit" }]
+                          content: [{ type: "input_text", text: "Hello, I need help with booking a visit. Please show me available dates." }]
                         }
                       }, "(simulated message for scheduling)");
                       
@@ -345,7 +393,7 @@ export function useHandleServerEvent({
                   } else {
                     // First send a simulated message to trigger the scheduling agent
                     const simulatedMessageId = generateSafeId();
-                    console.log("[handleFunctionCall] Sending simulated message to scheduleMeeting agent: 'I want to schedule a visit'");
+                    console.log("[handleFunctionCall] Sending simulated message to scheduleMeeting agent: 'Hello, I need help with booking a visit. Please show me available dates.'");
                     
                     sendClientEvent({
                       type: "conversation.item.create", 
@@ -353,7 +401,7 @@ export function useHandleServerEvent({
                         id: simulatedMessageId,
                         type: "message",
                         role: "user",
-                        content: [{ type: "input_text", text: "I want to schedule a visit" }]
+                        content: [{ type: "input_text", text: "Hello, I need help with booking a visit. Please show me available dates." }]
                       }
                     }, "(simulated message for scheduling)");
                     
@@ -392,13 +440,13 @@ export function useHandleServerEvent({
                       }
                       
                       // First send a simulated message to trigger the authentication agent
-                      const simulatedMessageId = generateSafeId();
+                      const simulatedAuthMessageId = generateSafeId();
                       console.log("[handleFunctionCall] Sending simulated message to authentication agent: 'I need to verify my details'");
                       
                       sendClientEvent({
                         type: "conversation.item.create", 
                         item: {
-                          id: simulatedMessageId,
+                          id: simulatedAuthMessageId,
                           type: "message",
                           role: "user",
                           content: [{ type: "input_text", text: "I need to verify my details" }]
@@ -418,13 +466,13 @@ export function useHandleServerEvent({
                     }
                     
                     // First send a simulated message to trigger the authentication agent
-                    const simulatedMessageId = generateSafeId();
+                    const simulatedAuthMessageId = generateSafeId();
                     console.log("[handleFunctionCall] Sending simulated message to authentication agent: 'I need to verify my details'");
                     
                     sendClientEvent({
                       type: "conversation.item.create", 
                       item: {
-                        id: simulatedMessageId,
+                        id: simulatedAuthMessageId,
                         type: "message",
                         role: "user",
                         content: [{ type: "input_text", text: "I need to verify my details" }]
@@ -434,6 +482,48 @@ export function useHandleServerEvent({
                     // Then trigger a response to that message
                     setTimeout(() => {
                       sendClientEvent({ type: "response.create" }, "(auto-trigger response after authentication transfer)");
+                    }, 100);
+                  }
+                }, 200);
+              } else if (newAgentConfig && newAgentConfig.name === "realEstate" && fnResult.flow_context === "from_scheduling_verification") {
+                // Special handling for return to realEstate after scheduling verification
+                console.log("[handleFunctionCall] realEstate agent transfer after scheduling verification - triggering confirmation message");
+                setTimeout(() => {
+                  if (hasActiveResponseRef.current) {
+                    console.log("[handleFunctionCall] Cancelling active response before triggering new one for realEstate confirmation");
+                    sendClientEvent({ type: "response.cancel" }, "(cancelling before realEstate confirmation)");
+                    setTimeout(() => {
+                      const simulatedRealEstateMessageId = generateSafeId();
+                      const confirmationTriggerText = "Finalize scheduling confirmation"; // Specific text
+                      console.log(`[handleFunctionCall] Sending simulated message to realEstate agent: '${confirmationTriggerText}'`);
+                      sendClientEvent({
+                        type: "conversation.item.create",
+                        item: {
+                          id: simulatedRealEstateMessageId,
+                          type: "message",
+                          role: "user",
+                          content: [{ type: "input_text", text: confirmationTriggerText }]
+                        }
+                      }, "(simulated message for realEstate scheduling confirmation)");
+                      setTimeout(() => {
+                        sendClientEvent({ type: "response.create" }, "(auto-trigger response for realEstate confirmation)");
+                      }, 100);
+                    }, 100);
+                  } else {
+                    const simulatedRealEstateMessageId = generateSafeId();
+                    const confirmationTriggerText = "Finalize scheduling confirmation"; // Specific text
+                    console.log(`[handleFunctionCall] Sending simulated message to realEstate agent: '${confirmationTriggerText}'`);
+                    sendClientEvent({
+                      type: "conversation.item.create",
+                      item: {
+                        id: simulatedRealEstateMessageId,
+                        type: "message",
+                        role: "user",
+                        content: [{ type: "input_text", text: confirmationTriggerText }]
+                      }
+                    }, "(simulated message for realEstate scheduling confirmation)");
+                    setTimeout(() => {
+                      sendClientEvent({ type: "response.create" }, "(auto-trigger response for realEstate confirmation)");
                     }, 100);
                   }
                 }, 200);
@@ -530,7 +620,29 @@ export function useHandleServerEvent({
       } else {
         // Handle case where tool logic is NOT found for the current agent
         console.error(`[handleFunctionCall] Tool logic for function "${functionCallParams.name}" not found on agent "${selectedAgentName}".`);
-        const errorResult = { error: `Agent ${selectedAgentName} cannot perform action ${functionCallParams.name}.` };
+        
+        // Create a more helpful error response based on the specific agent/tool combination
+        let errorMessage = `Agent ${selectedAgentName} cannot perform action ${functionCallParams.name}.`;
+        let suggestedAction = "";
+        
+        // Add agent-specific suggestions for common mistaken tool calls
+        if (selectedAgentName === "scheduleMeeting" && functionCallParams.name === "initiateScheduling") {
+          errorMessage = "The scheduleMeeting agent cannot call initiateScheduling.";
+          suggestedAction = "You should call getAvailableSlots to show available dates and times.";
+        } else if (selectedAgentName === "authentication" && functionCallParams.name === "completeScheduling") {
+          errorMessage = "The authentication agent cannot complete scheduling directly.";
+          suggestedAction = "You should call verifyOTP to complete the authentication process.";
+        } else if (selectedAgentName === "authentication" && functionCallParams.name === "initiateScheduling") {
+          errorMessage = "The authentication agent cannot initiate scheduling.";
+          suggestedAction = "You should complete verification with submitPhoneNumber and verifyOTP.";
+        }
+        
+        const errorResult = { 
+          error: errorMessage,
+          suggested_action: suggestedAction,
+          ui_display_hint: getAgentDefaultUiHint(selectedAgentName) // Helper function to determine appropriate UI state
+        };
+        
         sendClientEvent({
           type: "conversation.item.create",
           item: {
@@ -540,7 +652,7 @@ export function useHandleServerEvent({
           },
         });
         // Trigger a response so the agent can explain the error
-         sendClientEvent({ type: "response.create" }); 
+        sendClientEvent({ type: "response.create" }); 
       }
     } catch (error: any) {
       console.error(
@@ -976,6 +1088,7 @@ export function useHandleServerEvent({
       selectedAgentConfigSet,
       sendClientEvent,
       setSelectedAgentName,
+      setAgentMetadata,
       transcriptItems,
       addTranscriptMessage,
       updateTranscriptMessage,
@@ -994,4 +1107,16 @@ export function useHandleServerEvent({
     canCreateResponse,
     setSimulatedMessageId: (id: string) => { simulatedMessageIdRef.current = id; }
   };
+}
+
+// Add this helper function near the bottom of the file, outside other functions
+function getAgentDefaultUiHint(agentName: string): string {
+  switch (agentName) {
+    case "scheduleMeeting":
+      return "SCHEDULING_FORM";
+    case "authentication":
+      return "VERIFICATION_FORM";
+    default:
+      return "CHAT";
+  }
 }

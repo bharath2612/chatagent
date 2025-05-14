@@ -2,7 +2,7 @@
 
 import React, { useState, useRef, useEffect, useCallback } from "react"
 import { motion, AnimatePresence } from "framer-motion"
-import { MessageSquare, X, Mic, MicOff, Phone, Send, PhoneOff, Loader, ArrowLeft } from "lucide-react"
+import { MessageSquare, X, Mic, MicOff, Phone, Send, PhoneOff, Loader, ArrowLeft, CheckCircle } from "lucide-react"
 import { v4 as uuidv4 } from 'uuid';
 
 // UI Components
@@ -78,7 +78,8 @@ type ActiveDisplayMode =
   | 'IMAGE_GALLERY' 
   | 'SCHEDULING_FORM' // For TimePick
   | 'VERIFICATION_FORM' // For VerificationForm
-  | 'OTP_FORM'; // For OTPInput
+  | 'OTP_FORM' // For OTPInput
+  | 'VERIFICATION_SUCCESS'; // For showing verification success before returning to CHAT
 
 interface PropertyGalleryData {
   propertyName: string
@@ -266,6 +267,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       selectedAgentConfigSet,
       sendClientEvent,
       setSelectedAgentName,
+      setAgentMetadata, // Add the missing parameter
       transcriptItems,
       addTranscriptMessage, // Use the modified addTranscriptMessage
       updateTranscriptMessage,
@@ -1364,7 +1366,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
         // Hide the success message after a few seconds
         setTimeout(() => {
           setShowVerificationSuccess(false);
-        }, 3000);
+        }, 5000); // Increased from 3000 to 5000 (5 seconds)
         
         // Trigger a welcome back message from the realEstate agent
         setTimeout(() => {
@@ -1901,35 +1903,25 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
             )}
 
             {activeDisplayMode === 'OTP_FORM' && (
-              <div className="relative w-full flex justify-center items-center py-4">
-                <div className="w-full max-w-xs">
-                  <h3 className="text-lg font-medium text-center mb-4">Enter the verification code</h3>
-                  <p className="text-sm text-center mb-6">
-                    We've sent a 6-digit code to {verificationData.phone}
-                  </p>
-                  <OTPInput onSubmit={handleOtpSubmit} />
-                </div>
+              <div className="relative w-full">
+                <OTPInput 
+                  onSubmit={handleOtpSubmit}
+                />
               </div>
             )}
             
-            {showVerificationSuccess && (
-              <motion.div
-                 initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }}
-                 className="w-full bg-green-600 text-white rounded-lg p-4 my-4 flex items-center shadow-lg"
-               >
-                 <div className="mr-3 bg-white rounded-full p-1 text-green-600">
-                   <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                     <polyline points="20 6 9 17 4 12"></polyline>
-                   </svg>
-                 </div>
-                 <div>
-                   <h3 className="font-medium">Verification Successful!</h3>
-                   <p className="text-sm opacity-90">Your identity has been verified.</p>
-                 </div>
-               </motion.div>
+            {activeDisplayMode === 'VERIFICATION_SUCCESS' && (
+              <div className="flex flex-col items-center justify-center w-full py-8">
+                <div className="bg-green-500 rounded-full p-3 mb-4">
+                  <CheckCircle size={40} className="text-white" />
+                </div>
+                <h3 className="text-xl font-semibold mb-2">Verification Successful!</h3>
+                <p className="text-center">
+                  Your phone number has been successfully verified. You can now proceed.
+                </p>
+              </div>
             )}
-            
-            {/* इंश्योर PropertyImageGallery is rendered here, inside the main scrollable content div */}
+
             {activeDisplayMode === 'IMAGE_GALLERY' && propertyGalleryData && (
               <div className="w-full"> {/* Wrapper for consistent layout */}
                 <PropertyImageGallery

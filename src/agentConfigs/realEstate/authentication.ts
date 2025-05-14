@@ -356,13 +356,14 @@ const authenticationAgent: AgentConfig = {
             customer_name: metadataAny?.customer_name || "",
             phone_number: effective_phone_number,
             silentTransfer: true, // Default to silent for cleaner UX
-            ui_display_hint: 'CHAT', // Default, realEstateAgent will control UI via its context handling
-            message: null, // Default to null, realEstateAgent will provide user-facing messages
+            ui_display_hint: 'VERIFICATION_SUCCESS', // Custom hint for success message display
+            verification_success_message: "Verification successful! You're now verified.", // Explicit success message
+            message: "Verification successful! You're now verified.", // Also include in message field
           };
 
           if (cameFrom === 'scheduling') {
             destinationAgentName = 'realEstate'; // Transfer to realEstate for final confirmation
-            transferData.flow_context = 'from_full_scheduling'; // Key for realEstateAgent
+            transferData.flow_context = 'from_scheduling_verification'; // Changed from 'from_full_scheduling' to be more specific
             
             // Add all scheduling-related data needed by realEstateAgent for its confirmation message
             transferData.property_id_to_schedule = metadataAny?.property_id_to_schedule;

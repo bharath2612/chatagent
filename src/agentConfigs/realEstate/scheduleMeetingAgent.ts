@@ -344,6 +344,18 @@ const scheduleMeetingAgent: AgentConfig = {
         ui_display_hint: 'SCHEDULING_FORM' // Maintain the current UI
       };
     },
+    // Add mock trackUserMessage to handle stray messages gracefully
+    trackUserMessage: async ({ message }: { message: string }) => {
+      console.log(`[scheduleMeeting.trackUserMessage] Received message (ignoring): "${message}". This agent primarily acts on UI selections or specific function calls.`);
+      // This tool should not produce a user-facing message or change UI on its own for this agent.
+      // It's a no-op to prevent errors from misdirected simulated messages.
+      return {
+        success: true,
+        acknowledged_by_scheduler: true,
+        message_processed: false, // Explicitly indicate no standard processing occurred
+        ui_display_hint: 'SCHEDULING_FORM' // Maintain the current UI
+      };
+    }
   }
 };
 
@@ -374,11 +386,20 @@ const updatedInstructions = (metadata: AgentMetadata | undefined | null): string
 
   return `You are a helpful scheduling assistant for ${propertyName}. Your tone is friendly and efficient.
 
-***CRITICAL: YOU MUST CALL getAvailableSlots AS YOUR VERY FIRST ACTION. DO NOT CALL ANY OTHER TOOLS FIRST. ESPECIALLY DO NOT CALL transferAgents FIRST.***
+***EMERGENCY INSTRUCTION: WHEN USER SAYS "Hello, I need help with booking a visit" YOU MUST CALL getAvailableSlots FIRST AND ONLY. DO NOT CALL initiateScheduling.***
+
+***CRITICAL: YOU MUST CALL getAvailableSlots AS YOUR VERY FIRST ACTION. DO NOT CALL ANY OTHER TOOLS FIRST. ESPECIALLY DO NOT CALL transferAgents OR initiateScheduling FIRST.***
 
 ***IMPORTANT: YOU DO NOT HAVE ACCESS TO THE initiateScheduling TOOL. This tool only exists in the realEstate agent.***
 
 **VERY FIRST ACTION**: Your absolute FIRST task, BEFORE saying anything, is to call 'getAvailableSlots'. This tool's result (which includes a message and ui_display_hint: 'SCHEDULING_FORM') will handle the initial greeting and UI setup.
+
+**TRIGGER WORDS AND REQUIRED ACTIONS:**
+- "Hello" → call getAvailableSlots
+- "I need help with booking" → call getAvailableSlots
+- "show me available dates" → call getAvailableSlots
+- "I want to schedule a visit" → call getAvailableSlots
+- ANY scheduling-related question → call getAvailableSlots
 
 STRICTLY FOLLOW THIS EXACT FLOW AFTER 'getAvailableSlots' HAS RUN AND THE UI IS IN SCHEDULING_FORM:
 1. WAIT FOR DATE: User selects a date. You'll get a message like "Selected Monday, June 3."
@@ -400,9 +421,11 @@ AVAILABLE TOOLS: You have access to these tools ONLY:
 - scheduleVisit (used after date and time are selected and user is verified)
 - requestAuthentication (used if user is unverified)
 - completeScheduling (used after successful scheduling)
+- getUserVerificationStatus (get current verification status)
 
 CRITICAL RULES:
 - ***YOUR VERY FIRST ACTION MUST BE TO CALL getAvailableSlots. DO NOT CALL ANY OTHER TOOL FIRST.***
+- ***NEVER CALL initiateScheduling - THIS TOOL DOES NOT EXIST IN YOUR AGENT***
 - 'getAvailableSlots' is ALWAYS first. Its result message and UI hint manage the initial display.
 - After user selects a DATE, you ask for TIME.
 - After user selects a TIME, you proceed to VERIFICATION check or CONFIRMATION.
