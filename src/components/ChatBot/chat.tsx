@@ -2,7 +2,7 @@
 
 import React, { useState, useRef, useEffect, useCallback } from "react"
 import { motion, AnimatePresence } from "framer-motion"
-import { MessageSquare, X, Mic, MicOff, Phone, Send, PhoneOff, Loader, ArrowLeft } from "lucide-react"
+import { MessageSquare, X, Mic, MicOff, Phone, Send, PhoneOff, Loader, ArrowLeft, CheckCircle } from "lucide-react"
 import { v4 as uuidv4 } from 'uuid';
 
 // UI Components
@@ -78,7 +78,8 @@ type ActiveDisplayMode =
   | 'IMAGE_GALLERY' 
   | 'SCHEDULING_FORM' // For TimePick
   | 'VERIFICATION_FORM' // For VerificationForm
-  | 'OTP_FORM'; // For OTPInput
+  | 'OTP_FORM' // For OTPInput
+  | 'VERIFICATION_SUCCESS'; // For showing verification success before returning to CHAT
 
 interface PropertyGalleryData {
   propertyName: string
@@ -159,13 +160,23 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
   // --- New Centralized UI State ---
   const [activeDisplayMode, setActiveDisplayMode] = useState<ActiveDisplayMode>('CHAT');
 
+  // Add state to track when properties are being loaded
+  const [isLoadingProperties, setIsLoadingProperties] = useState<boolean>(false);
+
+  // Track the previous agent name for transition detection
+  const prevAgentNameRef = useRef<string | null>(null);
+  // Add a ref to track if we've already shown the verification success message
+  const hasShownSuccessMessageRef = useRef<boolean>(false);
+  // Add a ref to track the last property query message to avoid repeated processing
+  const lastPropertyQueryRef = useRef<string | null>(null);
+
   // Helper to generate safe IDs (32 chars max)
   const generateSafeId = () => uuidv4().replace(/-/g, '').slice(0, 32);
 
   // Update transcript management functions to use safe IDs
-  const addTranscriptMessage = useCallback((itemId: string, role: "user" | "assistant" | "system", text: string, properties?: PropertyProps[]) => {
+  const addTranscriptMessage = useCallback((itemId: string, role: "user" | "assistant" | "system", text: string, properties?: PropertyProps[], agentName?: string) => {
       // *** LOGGING POINT 4 ***
-      console.log(`[addTranscriptMessage] Called with role: ${role}, itemId: ${itemId}, hasProperties: ${!!properties}`);
+      // console.log(`[addTranscriptMessage] Called with role: ${role}, itemId: ${itemId}, hasProperties: ${!!properties}`);
       
       if (itemId === 'new' || itemId.length > 32) {
           itemId = generateSafeId();
@@ -174,7 +185,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       if (role === 'assistant') {
           setLastAgentTextMessage(text);
           if (properties && properties.length > 0) {
-              console.log('[addTranscriptMessage] Properties detected, skipping setPropertyListData here (handled in handleServerEvent).', properties);
+              // console.log('[addTranscriptMessage] Properties detected, skipping setPropertyListData here (handled in handleServerEvent).', properties);
           }
           // Never clear propertyListData for text messages, we want to keep them displayed
       }
@@ -182,10 +193,10 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       setTranscriptItems((prev) => {
            // Avoid adding duplicates if item already exists (e.g., from optimistic update)
            if (prev.some(item => item.itemId === itemId)) {
-               console.log(`[addTranscriptMessage] Item ${itemId} already exists, skipping add.`);
+              //  console.log(`[addTranscriptMessage] Item ${itemId} already exists, skipping add.`);
                return prev; 
            }
-            console.log(`[addTranscriptMessage] Adding item ${itemId} to transcriptItems state.`);
+            // console.log(`[addTranscriptMessage] Adding item ${itemId} to transcriptItems state.`);
            return [
                ...prev,
                {
@@ -195,6 +206,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
                    text: text, 
                    createdAtMs: Date.now(),
                    status: (role === 'assistant' || role === 'user') ? 'IN_PROGRESS' : 'DONE',
+                   agentName: agentName
                },
            ];
        });
@@ -233,7 +245,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
   // --- Send Client Events --- 
   const sendClientEvent = useCallback((eventObj: any, eventNameSuffix = "") => {
     if (dcRef.current && dcRef.current.readyState === "open") {
-      console.log(`[Send Event] ${eventObj.type} ${eventNameSuffix}`, eventObj);
+      // console.log(`[Send Event] ${eventObj.type} ${eventNameSuffix}`, eventObj);
       dcRef.current.send(JSON.stringify(eventObj));
     } else {
       console.error(
@@ -255,6 +267,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       selectedAgentConfigSet,
       sendClientEvent,
       setSelectedAgentName,
+      setAgentMetadata, // Add the missing parameter
       transcriptItems,
       addTranscriptMessage, // Use the modified addTranscriptMessage
       updateTranscriptMessage,
@@ -285,8 +298,8 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
     console.log("[UI] Attempting to load all properties directly");
     
     // Prevent multiple simultaneous calls
-    if (propertyListData) {
-      console.log("[UI] Properties already loaded, skipping request");
+    if (propertyListData || isLoadingProperties) {
+      console.log("[UI] Properties already loaded or loading in progress, skipping request");
       return;
     }
     
@@ -312,6 +325,9 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
     }
     
     try {
+      // Set loading flag to prevent duplicate calls
+      setIsLoadingProperties(true);
+
       // Show loading message
       addTranscriptMessage(generateSafeId(), 'system', 'Loading properties...');
       
@@ -402,8 +418,11 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
         'system', 
         'An error occurred while loading properties. Please try again later.'
       );
+    } finally {
+      // Always clear the loading flag, even on error
+      setIsLoadingProperties(false);
     }
-  }, [selectedAgentConfigSet, agentMetadata, addTranscriptMessage, generateSafeId, propertyListData]);
+  }, [selectedAgentConfigSet, agentMetadata, addTranscriptMessage, generateSafeId, propertyListData, isLoadingProperties]);
 
   // Fix the stopCurrentResponse function to check if a response is active first
   const stopCurrentResponse = useCallback((sendClientEvent: (eventObj: any, eventNameSuffix?: string) => void) => {
@@ -461,7 +480,8 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
     // Stop any current response/audio first
     stopCurrentResponse(sendClientEvent);
 
-    const scheduleMessage = `Yes, I'd like to schedule a visit for ${property.name}.`;
+    // Updated message with more scheduling-specific wording
+    const scheduleMessage = `Yes, I'd like to schedule a visit for ${property.name}. Please help me book an appointment.`;
     const userMessageId = generateSafeId();
     
     // Send events FIRST while the component state related to the modal is stable
@@ -484,6 +504,16 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
 
     let assistantMessageHandledLocally = false; 
     let propertiesHandledLocally = false;
+    
+    // Access the loading state to avoid duplicate property loading
+    if (isLoadingProperties) {
+      console.log("[handleServerEvent] Properties are already being loaded, skipping duplicate loading");
+    }
+
+    // When response is done, log which agent completed the response
+    if (serverEvent.type === "response.done") {
+      console.log(`[Agent Complete] ${selectedAgentName} finished response`);
+    }
 
     // --- Handle Function Call Output --- 
     if (
@@ -493,17 +523,26 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
         const functionOutputItem = serverEvent.item as any;
         const functionName = functionOutputItem.name;
 
+        // Special case: when initiating scheduling, clear previous agent messages
+        if (functionName === "initiateScheduling") {
+          console.log("[handleServerEvent] Detected initiateScheduling, clearing last agent message");
+          setLastAgentTextMessage(null);
+        }
+
         // Handle getProjectDetails
         if (functionName === "getProjectDetails") {
             console.log("[handleServerEvent] Detected function_call_output item for getProjectDetails.");
-            // Only process if propertyListData is currently null
-            if (!propertyListData) {
+            // Only process if propertyListData is currently null AND we're not already loading properties
+            if (!propertyListData && !isLoadingProperties) {
                 const outputString = functionOutputItem?.output;
                 const itemId = functionOutputItem?.id;
                 if (outputString) {
                     try {
                         const outputData = JSON.parse(outputString);
                         if (outputData.properties && Array.isArray(outputData.properties)) {
+                            // First set loading flag to prevent duplicate calls  
+                            setIsLoadingProperties(true);
+                            
                             // Process properties (map to PropertyProps) - Copy existing mapping logic here
                             const formattedProperties = outputData.properties.map((property: any) => {
                                 // Edge function returns data in a different format than our components expect
@@ -540,21 +579,29 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
                             addTranscriptMessage(newItemId, 'assistant', messageText, formattedProperties); // Add message AFTER setting state
                             updateTranscriptItemStatus(newItemId, 'DONE');
                             propertiesHandledLocally = true;
+                            
+                            // Clear loading flag after processing
+                            setIsLoadingProperties(false);
                         } else {
                             console.log("[handleServerEvent] Parsed function output, but 'properties' array not found or not an array.");
                         }
                     } catch (e) {
                         console.warn("[handleServerEvent] Error parsing getProjectDetails output:", e, outputString);
+                        // Clear loading flag in case of error
+                        setIsLoadingProperties(false);
                     }
                 } else {
                     console.log("[handleServerEvent] getProjectDetails function_call_output item has no output string.");
                 }
             } else {
-                console.log("[handleServerEvent] propertyListData already exists, skipping processing for getProjectDetails output.");
+                console.log("[handleServerEvent] propertyListData already exists or properties are being loaded, skipping processing for getProjectDetails output.");
                 propertiesHandledLocally = true; // Mark as handled to prevent hook processing
             }
         } else if (functionName === "getAvailableSlots") {
             console.log("[handleServerEvent] Detected function_call_output for getAvailableSlots.");
+            // Clear any previous messages from other agents when showing scheduling form
+            setLastAgentTextMessage(null);
+            
             const outputString = functionOutputItem.output;
             if (outputString) {
                 try {
@@ -585,10 +632,17 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
                         }
                         
                         // Always show time slots when we get them
+                        console.log("[UI] Setting showTimeSlots to TRUE");
                         setShowTimeSlots(true);
                         
                         // CRITICAL FIX: Set the display mode to SCHEDULING_FORM to ensure the UI shows the form
+                        console.log("[UI] CRITICAL: Setting activeDisplayMode to SCHEDULING_FORM");
                         setActiveDisplayMode('SCHEDULING_FORM');
+                        
+                        // Log UI state for debugging
+                        console.log("[UI] Current state check - activeDisplayMode:", 'SCHEDULING_FORM', 
+                            "showTimeSlots:", true, 
+                            "selectedProperty:", selectedProperty || outputData.property_id);
                         
                         // Set verification screen state based on verification status
                         // We'll show this later when the user selects a time
@@ -597,13 +651,17 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
                         // Play the message from the agent that came with the slots
                         if (outputData.message) {
                             console.log(`[UI] Slots message from agent: ${outputData.message}`);
+                            // Add an explicit scheduling agent message
+                            addTranscriptMessage(generateSafeId(), 'assistant', `[Scheduler] ${outputData.message}`);
                             // The LLM response will include this message, so we don't need to add it to transcript here
                         }
                         
                         propertiesHandledLocally = true; // Mark as handled
+                    } else {
+                        console.error("[handleServerEvent] getAvailableSlots response has no slots data!");
                     }
                 } catch (e) {
-                    console.warn("[handleServerEvent] Error parsing getAvailableSlots output:", e);
+                    console.error("[handleServerEvent] Error parsing getAvailableSlots output:", e);
                 }
             }
         } else if (functionName === "scheduleVisit") {
@@ -614,9 +672,17 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
                     const outputData = JSON.parse(outputString);
                     // The UI flow is handled within TimePick/BookingConfirmation/AppointmentConfirmed
                     // We just need to know if it was successful to potentially hide the picker if it's still open
-                    if (outputData.success === true) {
+                    if (outputData.success === true || outputData.booking_confirmed === true) {
                         console.log("[UI] Booking successful reported by agent.");
                         setShowTimeSlots(false); // Hide slots if booking is done
+                        
+                        // Add explicit scheduling confirmation message
+                        if (outputData.message) {
+                            addTranscriptMessage(generateSafeId(), 'assistant', `[Scheduler] ${outputData.message}`);
+                        } else {
+                            addTranscriptMessage(generateSafeId(), 'assistant', `[Scheduler] Your visit has been scheduled!`);
+                        }
+                        
                         propertiesHandledLocally = true;
                     } else if (outputData.error) {
                         // Maybe show an error message?
@@ -641,11 +707,58 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
          let text = serverEvent.item?.content?.[0]?.text ?? serverEvent.item?.content?.[0]?.transcript ?? "";
          const itemId = serverEvent.item?.id;
          if (itemId && text) {
-             console.log(`[handleServerEvent] Calling addTranscriptMessage for regular assistant message. itemId: ${itemId}, text: ${text}`);
-             addTranscriptMessage(itemId, 'assistant', text, undefined);
-             assistantMessageHandledLocally = true; // Mark that an assistant message was added
+            // Log agent response when complete (not during streaming)
+            if (serverEvent.item?.status === "done" || (serverEvent.item as any)?.done === true) {
+              console.log(`[Agent Response] ${selectedAgentName}: "${text.substring(0, 100)}${text.length > 100 ? '...' : ''}"`);
+            }
+            
+            // Use a prefix to identify which agent sent the message
+            const agentPrefix = activeDisplayMode === 'SCHEDULING_FORM' ? '[Scheduler] ' : 
+                               selectedAgentName === 'authentication' ? '[Auth] ' : '';
+            
+            // Special case handling for scheduling agent messages
+            if (selectedAgentName === 'scheduleMeeting') {
+              // Filter out premature scheduling confirmations before time selection is complete
+              if (!selectedTime && text.toLowerCase().includes('confirm') && 
+                  (text.toLowerCase().includes('visit') || text.toLowerCase().includes('schedule'))) {
+                console.log(`[Agent Response] Filtering premature scheduling confirmation message`);
+                assistantMessageHandledLocally = true; // Skip adding this message
+                return;
+              }
+              
+              // Filter out repeat date selection prompts if we already have date selected
+              if (selectedDay && text.toLowerCase().includes('select a date') && 
+                  text.toLowerCase().includes('calendar')) {
+                console.log(`[Agent Response] Filtering repeat date selection prompt (date already selected)`);
+                assistantMessageHandledLocally = true; // Skip adding this message
+                return;
+              }
+            }
+            
+            // If we're transitioning between agents, make it clear in the conversation
+            if (prevAgentNameRef.current && prevAgentNameRef.current !== selectedAgentName) {
+              // Only for the first message from a new agent
+              const isFirstMessageFromAgent = !(transcriptItems.some(item => 
+                item.type === 'MESSAGE' && item.role === 'assistant' && 
+                item.agentName === selectedAgentName));
+                
+              if (isFirstMessageFromAgent) {
+                console.log(`[Agent Response] First message from new agent: ${selectedAgentName}`);
+                addTranscriptMessage(
+                  generateSafeId(),
+                  'system',
+                  `--- ${selectedAgentName === 'scheduleMeeting' ? 'Scheduling Assistant' : 
+                     selectedAgentName === 'authentication' ? 'Authentication' : 
+                     'Property Assistant'} ---`
+                );
+              }
+            }
+            
+            // Add message to transcript with agent prefix
+            addTranscriptMessage(itemId, 'assistant', agentPrefix + text, undefined, selectedAgentName);
+            assistantMessageHandledLocally = true; // Mark that an assistant message was added
          } else {
-             console.log("[handleServerEvent] Skipping assistant conversation.item.created event (no itemId or text).");
+            //  console.log("[handleServerEvent] Skipping assistant conversation.item.created event (no itemId or text).");
          }
      }
 
@@ -655,7 +768,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       serverEvent.item?.type === 'function_call_output' &&
       (serverEvent.item as any).name === 'getProjectDetails';
     if (!isGetProjectDetailsOutput && !propertiesHandledLocally) {
-      console.log(`[handleServerEvent] Passing event ${serverEvent.type} to original hook handler.`);
+      // console.log(`[handleServerEvent] Passing event ${serverEvent.type} to original hook handler.`);
       handleServerEventRefFromHook.current(serverEvent);
     }
 
@@ -664,7 +777,16 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       updateTranscriptItemStatus, 
       handleServerEventRefFromHook,
       generateSafeId,
-      propertyListData
+      propertyListData,
+      isLoadingProperties,
+      setIsLoadingProperties,
+      selectedAgentName, // Add the current agent name to dependencies
+      selectedProperty, // Add selectedProperty to dependencies
+      setSelectedProperty, // Add property setter to dependencies
+      selectedTime, // Add selectedTime to dependencies
+      selectedDay, // Add selectedDay to dependencies
+      prevAgentNameRef,
+      transcriptItems
     ]);
 
   // Ref part remains the same
@@ -720,7 +842,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
   // --- Session Update Logic --- 
    const updateSession = useCallback(async (shouldTriggerResponse: boolean = false) => {
        if (sessionStatus !== 'CONNECTED' || !selectedAgentConfigSet || !dcRef.current) {
-           console.log("[Update Session] Cannot update, not connected or config missing.");
+          //  console.log("[Update Session] Cannot update, not connected or config missing.");
            return;
        }
        
@@ -820,12 +942,21 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
 
        sendClientEvent(sessionUpdatePayload, `(agent: ${selectedAgentName})`);
 
-       // If shouldTriggerResponse is true, follow the old code's approach of sending a simulated message
+       // If shouldTriggerResponse is true, follow old code approach of sending simulated message
        if (shouldTriggerResponse) {
            console.log("[Update Session] Triggering initial response with simulated 'hi' message");
+           
+           // For authentication agent, set the VERIFICATION_FORM display mode first
+           if (selectedAgentName === 'authentication') {
+               // Set UI mode before sending the message, so it won't be overridden
+               setActiveDisplayMode('VERIFICATION_FORM');
+               console.log("[Update Session] Setting VERIFICATION_FORM display mode for authentication agent");
+           }
+           
+           // Now send the simulated message to trigger the agent response
            sendSimulatedUserMessage("hi");
        }
-   }, [sessionStatus, selectedAgentName, selectedAgentConfigSet, agentMetadata, chatbotId, sendClientEvent, selectedLanguage, micMuted]); 
+   }, [sessionStatus, selectedAgentName, selectedAgentConfigSet, agentMetadata, chatbotId, sendClientEvent, selectedLanguage, micMuted, setActiveDisplayMode]);
 
   // Add the sendSimulatedUserMessage function to match old code
   const sendSimulatedUserMessage = useCallback((text: string) => {
@@ -1066,8 +1197,18 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
               fetchOrgMetadata().then(() => {
                   // Check if still connected *after* async fetch completes
                   if (sessionStatus === 'CONNECTED') { 
-                       // Now update the session and trigger the initial response
-                       updateSession(true); 
+                       // Determine if an initial response should be triggered by a simulated message
+                       // Agents like 'scheduleMeeting' and 'authentication' trigger their own first actions
+                       // (e.g., getAvailableSlots or a verification prompt) without needing a user message.
+                       const agentAutoTriggersFirstAction = 
+                           selectedAgentName === 'scheduleMeeting' || 
+                           selectedAgentName === 'authentication';
+
+                       // If the agent doesn't auto-trigger, then we send a simulated "hi" to get it started.
+                       const shouldSendSimulatedHi = !agentAutoTriggersFirstAction;
+                       
+                       console.log(`[Effect] Updating session. Agent: ${selectedAgentName}, Auto-triggers: ${agentAutoTriggersFirstAction}, Sending simulated 'hi': ${shouldSendSimulatedHi}`);
+                       updateSession(shouldSendSimulatedHi); 
                        // Mark setup truly complete *after* successful updateSession
                        // initialSessionSetupDoneRef.current = true; // Already set above
                        console.log("[Effect] Initial session setup complete.");
@@ -1082,7 +1223,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
               });
           } else {
                // This log confirms the ref is preventing re-runs for the *same* agent/connection.
-               console.log("[Effect] Connected, but initial session setup already marked as done/in-progress.");
+              //  console.log("[Effect] Connected, but initial session setup already marked as done/in-progress.");
           }
       } else {
           // Log why the effect isn't running the setup
@@ -1163,73 +1304,15 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
        }
    }, [transcriptItems, lastAgentTextMessage, propertyListData, selectedPropertyDetails]); // Scroll when relevant content changes
 
-  // Effect to monitor transcript for property-related queries
-  useEffect(() => {
-    // Only run if connected and there are transcript items but no properties loaded yet
-    if (
-      sessionStatus === 'CONNECTED' &&
-      !propertyListData &&
-      !selectedPropertyDetails &&
-      initialSessionSetupDoneRef.current // Only after initial setup is complete
-    ) {
-      // Get the last user message - still need transcriptItems here!
-      // Re-thinking: Removing transcriptItems dependency was wrong if we check the last message.
-      // The core issue is re-triggering handleGetAllProperties which adds a message.
-      // Let's keep transcriptItems dependency BUT prevent the loop inside.
-      if (transcriptItems.length === 0) return; // Don't run if no transcript yet
-
-      // Get the last user message
-      const lastUserMessage = [...transcriptItems]
-        .filter(item => item.type === 'MESSAGE' && item.role === 'user')
-        .pop();
-      
-      if (lastUserMessage?.text) {
-        const text = lastUserMessage.text.toLowerCase();
-        
-        // Add a check to see if the last message was already processed by this effect
-        // This requires storing the ID of the last processed message.
-        // For now, a simpler check: Is the *very last* item in the transcript
-        // one of the messages added BY handleGetAllProperties?
-        const veryLastItem = transcriptItems[transcriptItems.length - 1];
-        const isLoadingMessage = veryLastItem?.role === 'system' && veryLastItem?.text === 'Loading properties...';
-        const isResultsMessage = veryLastItem?.role === 'assistant' && veryLastItem?.text?.includes('properties I found');
-        const isErrorMessage = veryLastItem?.role === 'system' && veryLastItem?.text?.startsWith('Error loading properties');
-
-        if (isLoadingMessage || isResultsMessage || isErrorMessage) {
-           console.log("[Effect Check] Skipping keyword check as last message seems related to property loading.");
-           return; // Don't re-run if the last message is from the loading process
-        }
-        
-        // Check if it contains property-related keywords
-        const propertyRelatedKeywords = [
-          'property', 'properties', 'house', 'home', 'apartment', 'flat', 
-          'real estate', 'housing', 'buy', 'purchase', 'rent', 'view', 'show me'
-        ];
-        
-        const containsPropertyKeyword = propertyRelatedKeywords.some(keyword => 
-          text.includes(keyword.toLowerCase())
-        );
-        
-        if (containsPropertyKeyword) {
-          console.log("[Effect] Detected property-related query in user message:", text);
-          // Load properties automatically when user asks about them
-          handleGetAllProperties();
-        }
-      }
+  // --- UI Handlers --- 
+  const toggleInput = () => {
+    setInputVisible(!inputVisible)
+    if (!inputVisible) {
+      setTimeout(() => {
+        inputRef.current?.focus()
+      }, 300)
     }
-  }, [
-    transcriptItems, 
-    sessionStatus, 
-    propertyListData, 
-    selectedPropertyDetails, 
-    handleGetAllProperties, // handleGetAllProperties itself should be stable due to useCallback
-    initialSessionSetupDoneRef // initialSessionSetupDoneRef should be stable
-  ]);
-
-  // Track the previous agent name for transition detection
-  const prevAgentNameRef = useRef<string | null>(null);
-  // Add a ref to track if we've already shown the verification success message
-  const hasShownSuccessMessageRef = useRef<boolean>(false);
+  }
 
   // Add useEffect to monitor agent changes and display the scheduling UI
   useEffect(() => {
@@ -1238,12 +1321,22 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       return;
     }
     
+    // Log the newly loaded agent and its current metadata from chat.tsx state
+    console.log(`[Agent Load] Agent "${selectedAgentName}" is now active. Current chat.tsx agentMetadata:`, agentMetadata);
+    
     const wasFromAuthentication = prevAgentNameRef.current === "authentication";
     
+    // Clear last agent message when switching agents to avoid confusion
+    setLastAgentTextMessage(null);
+
     if (selectedAgentName === "authentication") {
       console.log("[Agent Change] Detected switch to authentication agent.");
       setIsVerifying(true); // Show verification UI elements
       setShowTimeSlots(false); // Hide scheduling UI
+      // Explicitly set VERIFICATION_FORM display mode when switching to authentication
+      setActiveDisplayMode('VERIFICATION_FORM');
+      console.log("[Agent Change] Setting VERIFICATION_FORM display mode for authentication agent");
+      
       // Do not reset OTP screen here as we want it to show after verification
       
       // Reset success message flag when entering authentication again
@@ -1252,14 +1345,10 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       console.log("[Agent Change] Detected switch to scheduleMeeting agent.");
       setIsVerifying(false); // Hide verification UI if switching *to* scheduling
       setShowOtpScreen(false); // Hide OTP screen when switching away from authentication
-      // Existing logic to show time slots
-      if (selectedProperty) {
-        setShowTimeSlots(true);
-        setAvailableSlots({}); 
-      } else {
-        setShowTimeSlots(false);
-        setAvailableSlots({}); 
-      }
+      setShowTimeSlots(true); // Show time slots
+      // Remove direct control of setShowTimeSlots here.
+      // Let getAvailableSlots tool result handle showing the time slots via setActiveDisplayMode and setShowTimeSlots.
+      // setAvailableSlots({}); // Clearing availableSlots here might be okay, or defer to getAvailableSlots
     } else if (selectedAgentName === "realEstate") {
       console.log("[Agent Change] Switched back to realEstate agent.");
       
@@ -1277,14 +1366,15 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
         // Hide the success message after a few seconds
         setTimeout(() => {
           setShowVerificationSuccess(false);
-        }, 3000);
+        }, 5000); // Increased from 3000 to 5000 (5 seconds)
         
         // Trigger a welcome back message from the realEstate agent
         setTimeout(() => {
           if (canCreateResponse()) {
-            const welcomeMsg = "Thank you for verifying your identity. How can I help you with properties today?";
-            const systemId = generateSafeId();
-            addTranscriptMessage(systemId, 'assistant', welcomeMsg);
+            // const welcomeMsg = "Thank you for verifying your identity. How can I help you with properties today?";
+            // Make the message very distinct to check if this update is visible
+            const welcomeMsg = `Welcome back! How can I help you with properties today?`;
+            addTranscriptMessage(generateSafeId(), 'assistant', welcomeMsg);
             
             // Trigger the agent to generate a proper response
             sendClientEvent({ type: "response.create" }, "(trigger response after verification)");
@@ -1302,17 +1392,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
     prevAgentNameRef.current = selectedAgentName;
     
     // Reset setup flag if agent changes (handled in separate effect)
-  }, [selectedAgentName, selectedProperty]);
-
-  // --- UI Handlers --- 
-  const toggleInput = () => {
-    setInputVisible(!inputVisible)
-    if (!inputVisible) {
-      setTimeout(() => {
-        inputRef.current?.focus()
-      }, 300)
-    }
-  }
+  }, [selectedAgentName, selectedProperty, agentMetadata, canCreateResponse, generateSafeId, addTranscriptMessage, sendClientEvent]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") {
@@ -1381,22 +1461,27 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
 
   // --- Render --- 
   // *** LOGGING POINT 5 ***
-  console.log("[Render] State before return:", { 
-      sessionStatus, 
-      showIntro, 
-      lastAgentTextMessage: lastAgentTextMessage?.substring(0, 50) + '...', // Log snippet
-      propertyListDataLength: propertyListData?.length, 
-      selectedPropertyDetails: !!selectedPropertyDetails, 
-      inputVisible, 
-      micMuted 
+  // console.log("[Render] State before return:", { 
+  //     sessionStatus, 
+  //     showIntro, 
+  //     lastAgentTextMessage: lastAgentTextMessage?.substring(0, 50) + '...', // Log snippet
+  //     propertyListDataLength: propertyListData?.length, 
+  //     selectedPropertyDetails: !!selectedPropertyDetails, 
+  //     inputVisible, 
+  //     micMuted 
+  // });
+
+  console.log("[Render] TimePick and UI state:", {
+    activeDisplayMode,
+    showTimeSlots,
+    hasSelectedProperty: !!selectedProperty,
+    isVerifying,
+    propertyId: selectedProperty?.id
   });
 
   // Add handleTimeSlotSelection function to handle slot selection
   const handleTimeSlotSelection = useCallback((date: string, time: string) => {
     console.log(`[UI] User selected time slot: date=${date}, time=${time || 'none'}`);
-    
-    // Stop any current response/audio first to avoid errors
-    stopCurrentResponse(sendClientEvent);
     
     // Store the selected date in state (always), and time only if provided
     setSelectedDay(date);
@@ -1418,8 +1503,8 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
         console.log(`[UI] Saved only date ${date} to agent metadata (no time yet)`);
       }
     }
-    
-    // Add a small delay before sending the selection message to avoid race conditions
+
+    // Add a delay to ensure we don't have race conditions with response processing
     setTimeout(() => {
       // Create different messages based on whether this is a date-only selection or date+time
       const userMessageId = generateSafeId();
@@ -1431,36 +1516,56 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
         selectionMessage = `Selected ${date}.`; // Date-only selection
       }
       
-      addTranscriptMessage(userMessageId, 'user', selectionMessage);
-      
-      sendClientEvent(
-        {
-          type: "conversation.item.create",
-          item: {
-            id: userMessageId, type: "message", role: "user", 
-            content: [{ type: "input_text", text: selectionMessage }]
-          }
-        },
-        time ? "(time slot selection)" : "(date selection only)"
-      );
-      
-      // Small delay before creating a response
-      setTimeout(() => {
-        if (canCreateResponse()) {
-          sendClientEvent({ type: "response.create" }, "(trigger response after selection)");
-        } else {
-          console.log("[UI] Cannot create response - active response or agent transfer in progress");
-          sendClientEvent({ type: "response.cancel" });
+      // Stop any current response to avoid cancellation errors
+      if (!canCreateResponse()) {
+        console.log("[UI] Stopping any active response before sending selection");
+        sendClientEvent({ type: "response.cancel" }, "(canceling before selection)");
+        sendClientEvent({ type: "output_audio_buffer.clear" }, "(clearing audio buffer)");
+        
+        // Give the server time to process the cancellation
+        setTimeout(() => {
+          // Now safe to add message and create a new response
+          addTranscriptMessage(userMessageId, 'user', selectionMessage);
           
-          // Try again after cancellation
+          sendClientEvent(
+            {
+              type: "conversation.item.create",
+              item: {
+                id: userMessageId, type: "message", role: "user", 
+                content: [{ type: "input_text", text: selectionMessage }]
+              }
+            },
+            time ? "(time slot selection)" : "(date selection only)"
+          );
+          
+          // Small delay before creating a response
           setTimeout(() => {
-            sendClientEvent({ type: "response.create" }, "(retry after cancellation)");
-          }, 200);
-        }
-      }, 100);
+            sendClientEvent({ type: "response.create" }, "(trigger response after selection)");
+          }, 150);
+        }, 250);
+      } else {
+        // No active response, can proceed immediately
+        addTranscriptMessage(userMessageId, 'user', selectionMessage);
+        
+        sendClientEvent(
+          {
+            type: "conversation.item.create",
+            item: {
+              id: userMessageId, type: "message", role: "user", 
+              content: [{ type: "input_text", text: selectionMessage }]
+            }
+          },
+          time ? "(time slot selection)" : "(date selection only)"
+        );
+        
+        // Small delay before creating a response
+        setTimeout(() => {
+          sendClientEvent({ type: "response.create" }, "(trigger response after selection)");
+        }, 100);
+      }
     }, 100);
 
-  }, [sendClientEvent, addTranscriptMessage, generateSafeId, selectedAgentConfigSet, stopCurrentResponse, canCreateResponse]);
+  }, [sendClientEvent, addTranscriptMessage, generateSafeId, selectedAgentConfigSet, canCreateResponse]);
 
   // Add verification submission handler
   const handleVerificationSubmit = useCallback((name: string, phone: string) => {
@@ -1522,6 +1627,79 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
     setPropertyGalleryData(null);
     setActiveDisplayMode('CHAT'); // Or a more context-aware previous state
   }
+
+  // Effect to monitor transcript for property-related queries
+  useEffect(() => {
+    // Only run if connected and there are transcript items but no properties loaded yet
+    if (
+      sessionStatus === 'CONNECTED' &&
+      !propertyListData &&
+      !selectedPropertyDetails &&
+      !isLoadingProperties &&  // Add check for loading state to prevent duplicate calls
+      initialSessionSetupDoneRef.current // Only after initial setup is complete
+    ) {
+      // Get the last user message - still need transcriptItems here!
+      // Re-thinking: Removing transcriptItems dependency was wrong if we check the last message.
+      // The core issue is re-triggering handleGetAllProperties which adds a message.
+      // Let's keep transcriptItems dependency BUT prevent the loop inside.
+      if (transcriptItems.length === 0) return; // Don't run if no transcript yet
+
+      // Get the last user message
+      const lastUserMessage = [...transcriptItems]
+        .filter(item => item.type === 'MESSAGE' && item.role === 'user')
+        .pop();
+      
+      if (lastUserMessage?.text) {
+        const text = lastUserMessage.text.toLowerCase();
+        
+        // Skip if we've already processed this exact message
+        if (lastPropertyQueryRef.current === lastUserMessage.itemId) {
+          console.log("[Effect] Skipping already processed message:", text);
+          return;
+        }
+        
+        // Add a check to see if the last message was already processed by this effect
+        // This requires storing the ID of the last processed message.
+        // For now, a simpler check: Is the *very last* item in the transcript
+        // one of the messages added BY handleGetAllProperties?
+        const veryLastItem = transcriptItems[transcriptItems.length - 1];
+        const isLoadingMessage = veryLastItem?.role === 'system' && veryLastItem?.text === 'Loading properties...';
+        const isResultsMessage = veryLastItem?.role === 'assistant' && veryLastItem?.text?.includes('properties I found');
+        const isErrorMessage = veryLastItem?.role === 'system' && veryLastItem?.text?.startsWith('Error loading properties');
+
+        if (isLoadingMessage || isResultsMessage || isErrorMessage) {
+           console.log("[Effect Check] Skipping keyword check as last message seems related to property loading.");
+           return; // Don't re-run if the last message is from the loading process
+        }
+        
+        // Check if it contains property-related keywords
+        const propertyRelatedKeywords = [
+          'property', 'properties', 'house', 'home', 'apartment', 'flat', 
+          'real estate', 'housing', 'buy', 'purchase', 'rent', 'view', 'show me'
+        ];
+        
+        const containsPropertyKeyword = propertyRelatedKeywords.some(keyword => 
+          text.includes(keyword.toLowerCase())
+        );
+        
+        if (containsPropertyKeyword) {
+          console.log("[Effect] Detected property-related query in user message:", text);
+          // Store this message's ID to avoid reprocessing
+          lastPropertyQueryRef.current = lastUserMessage.itemId;
+          // Load properties automatically when user asks about them
+          handleGetAllProperties();
+        }
+      }
+    }
+  }, [
+    transcriptItems, 
+    sessionStatus, 
+    propertyListData, 
+    selectedPropertyDetails,
+    isLoadingProperties, 
+    handleGetAllProperties,
+    initialSessionSetupDoneRef
+  ]);
 
   return (
     <div
@@ -1725,35 +1903,25 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
             )}
 
             {activeDisplayMode === 'OTP_FORM' && (
-              <div className="relative w-full flex justify-center items-center py-4">
-                <div className="w-full max-w-xs">
-                  <h3 className="text-lg font-medium text-center mb-4">Enter the verification code</h3>
-                  <p className="text-sm text-center mb-6">
-                    We've sent a 6-digit code to {verificationData.phone}
-                  </p>
-                  <OTPInput onSubmit={handleOtpSubmit} />
-                </div>
+              <div className="relative w-full">
+                <OTPInput 
+                  onSubmit={handleOtpSubmit}
+                />
               </div>
             )}
             
-            {showVerificationSuccess && (
-              <motion.div
-                 initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }}
-                 className="w-full bg-green-600 text-white rounded-lg p-4 my-4 flex items-center shadow-lg"
-               >
-                 <div className="mr-3 bg-white rounded-full p-1 text-green-600">
-                   <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                     <polyline points="20 6 9 17 4 12"></polyline>
-                   </svg>
-                 </div>
-                 <div>
-                   <h3 className="font-medium">Verification Successful!</h3>
-                   <p className="text-sm opacity-90">Your identity has been verified.</p>
-                 </div>
-               </motion.div>
+            {activeDisplayMode === 'VERIFICATION_SUCCESS' && (
+              <div className="flex flex-col items-center justify-center w-full py-8">
+                <div className="bg-green-500 rounded-full p-3 mb-4">
+                  <CheckCircle size={40} className="text-white" />
+                </div>
+                <h3 className="text-xl font-semibold mb-2">Verification Successful!</h3>
+                <p className="text-center">
+                  Your phone number has been successfully verified. You can now proceed.
+                </p>
+              </div>
             )}
-            
-            {/* इंश्योर PropertyImageGallery is rendered here, inside the main scrollable content div */}
+
             {activeDisplayMode === 'IMAGE_GALLERY' && propertyGalleryData && (
               <div className="w-full"> {/* Wrapper for consistent layout */}
                 <PropertyImageGallery

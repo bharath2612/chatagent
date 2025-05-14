@@ -15,6 +15,19 @@ const getAuthInstructions = (metadata: AgentMetadata | undefined | null) => {
   const customerName = metadata?.customer_name;
 
   return `You are an authentication assistant. Your primary goal is to verify the user's phone number via OTP.
+- **STYLE:** fun-casual, like you're chatting with a friend.
+- **LENGTH:** absolute maximum 2 short sentences (≈ 30 words). Never write paragraphs.
+
+***IMPORTANT: YOUR VERY FIRST MESSAGE MUST ALWAYS BE EXACTLY: "Welcome! To continue, please fill out the form below." DO NOT SAY ANYTHING ELSE IN YOUR FIRST MESSAGE.***
+
+**AVAILABLE TOOLS: You have access to these tools ONLY:**
+- submitPhoneNumber (used to submit the user's phone number and trigger an OTP)
+- verifyOTP (used to verify the OTP code entered by the user)
+
+***IMPORTANT: You DO NOT have access to these tools that other agents might use:***
+- completeScheduling (only available to scheduleMeeting agent)
+- initiateScheduling (only available to realEstate agent)
+- getAvailableSlots (only available to scheduleMeeting agent)
 
 **Current Status**:
 - Came from: ${cameFrom}
@@ -34,6 +47,7 @@ ${customerName ? `- User Name Provided: ${customerName}` : `- User Name: Not yet
     *   If failed (verified: false), the tool result includes ui_display_hint: 'OTP_FORM' and an error message. Relay the error message (e.g., "That code doesn't seem right. Please try again.") and the user can re-enter the OTP.
 
 **CRITICAL RULES:**
+- YOUR VERY FIRST MESSAGE MUST BE EXACTLY: "Welcome! To continue, please fill out the form below."
 - Follow the flow exactly. Do not skip steps.
 - Ask for NAME first, THEN phone number.
 - Rely on the tool results' messages and ui_display_hints to manage the flow.
@@ -310,12 +324,14 @@ const authenticationAgent: AgentConfig = {
 
       try {
         console.log(`[verifyOTP] Using phoneAuth URL: ${supabaseFuncUrl}`);
+        console.log("[verifyOTP] Sending OTP verification request:", requestBody); // Added log
         const response = await fetch(supabaseFuncUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json", "Authorization": `Bearer ${anonKey}` },
           body: JSON.stringify(requestBody),
         });
         const data = await response.json();
+        console.log("[verifyOTP] Raw PhoneAuth VERIFY response status:", response.status, "ok:", response.ok); // Added log
         console.log("[verifyOTP] PhoneAuth response:", data);
 
         const isVerifiedByServer =
@@ -325,30 +341,59 @@ const authenticationAgent: AgentConfig = {
           (response.ok && data.success === "true") ||
           (response.ok && data.verified === "true") ||
           (response.ok && data.message && data.message.toLowerCase().includes("verif"));
+        console.log("[verifyOTP] Server verification result (isVerifiedByServer):", isVerifiedByServer); // Added log
 
         if (isVerifiedByServer) {
           console.log("[verifyOTP] OTP verified successfully based on server response.");
-          const cameFromScheduling = (authenticationAgent.metadata as any)?.came_from === 'scheduling' || (authenticationAgent.metadata as any)?.came_from === 'scheduleMeeting';
-          const destination = cameFromScheduling ? "scheduleMeeting" : "realEstate";
-          console.log(`[verifyOTP] Preparing transfer back to: ${destination}`);
+          
+          const cameFrom = (authenticationAgent.metadata as any)?.came_from;
+          const metadataAny = authenticationAgent.metadata as any; // Cache for convenience
+
+          let destinationAgentName: string;
+          // Initialize transferData with common fields for successful verification
+          let transferData: any = {
+            is_verified: true,
+            customer_name: metadataAny?.customer_name || "",
+            phone_number: effective_phone_number,
+            silentTransfer: true, // Default to silent for cleaner UX
+            ui_display_hint: 'VERIFICATION_SUCCESS', // Custom hint for success message display
+            verification_success_message: "Verification successful! You're now verified.", // Explicit success message
+            message: "Verification successful! You're now verified.", // Also include in message field
+          };
+
+          if (cameFrom === 'scheduling') {
+            destinationAgentName = 'realEstate'; // Transfer to realEstate for final confirmation
+            transferData.flow_context = 'from_scheduling_verification'; // Changed from 'from_full_scheduling' to be more specific
+            
+            // Add all scheduling-related data needed by realEstateAgent for its confirmation message
+            transferData.property_id_to_schedule = metadataAny?.property_id_to_schedule;
+            transferData.property_name = metadataAny?.property_name;
+            transferData.selectedDate = metadataAny?.selectedDate;
+            transferData.selectedTime = metadataAny?.selectedTime;
+            transferData.has_scheduled = true; // Mark as scheduled, verification was the last step
+            
+          } else { // Came from realEstateAgent directly for general auth or other flows
+            destinationAgentName = 'realEstate';
+            transferData.flow_context = 'from_direct_auth'; // Flag for realEstateAgent
+            // is_verified, customer_name, phone_number are already in transferData
+            // has_scheduled is not applicable or should remain as per existing metadata state (likely false/undefined)
+          }
+          
+          console.log(`[verifyOTP] Preparing transfer to: ${destinationAgentName} with data:`, transferData);
 
           // IMPORTANT: Update agent's own metadata before returning transfer info
           if (authenticationAgent.metadata) {
             authenticationAgent.metadata.is_verified = true;
+            if (cameFrom === 'scheduling') { // If scheduling flow, also mark as scheduled in auth agent's own state
+                (authenticationAgent.metadata as any).has_scheduled = true; 
+            }
             // customer_name and phone_number should have been set by submitPhoneNumber or already exist
           }
 
           return {
-            verified: true,
-            destination_agent: destination,
-            silentTransfer: true,
-            ui_display_hint: 'CHAT', // Revert UI to chat before transfer
-            message: "Thank you for verifying!", // Agent says this briefly
-            // Data to be merged into the destination agent's metadata:
-            is_verified: true,
-            customer_name: authenticationAgent.metadata?.customer_name || "",
-            phone_number: effective_phone_number, // Pass the verified phone
-            // org_id, chatbot_id, session_id are already part of the metadata copied during transfer
+            verified: true, // This is the primary result of verifyOTP tool itself
+            destination_agent: destinationAgentName,
+            ...transferData // Spread all other necessary fields for the transfer
           };
         } else {
           const errorMsg = data.error || data.message || "Invalid OTP or verification failed.";
@@ -378,6 +423,15 @@ const authenticationAgent: AgentConfig = {
     detectPropertyInMessage: async ({ message }: { message: string }) => {
       console.log("[Authentication] Received detectPropertyInMessage call (ignoring):", message);
       return { propertyDetected: false, message: "Authentication agent does not detect properties", ui_display_hint: 'CHAT' };
+    },
+    // Add mock implementation for completeScheduling
+    completeScheduling: async () => {
+      console.log("[Authentication] Received completeScheduling call (redirecting to verifyOTP)");
+      return {
+        error: "The authentication agent cannot complete scheduling directly. Please use verifyOTP to complete the authentication process.",
+        message: "Please complete the verification process first.",
+        ui_display_hint: 'VERIFICATION_FORM' // Maintain verification form
+      };
     }
   }
 };

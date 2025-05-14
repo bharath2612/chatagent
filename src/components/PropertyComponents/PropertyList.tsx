@@ -1,7 +1,7 @@
 "use client"
 
 import type React from "react"
-import { useState, useRef } from "react"
+import { useState, useRef, memo } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import PropertyDetails from "./propertyDetails"
 
@@ -44,9 +44,7 @@ interface PropertyListProps {
   onPropertySelect: (property: PropertyProps) => void
 }
 
-export default function PropertyList({ properties, onScheduleVisit, onPropertySelect }: PropertyListProps) {
-  console.log("[PropertyList Component] Received properties:", properties);
-
+function PropertyList({ properties, onScheduleVisit, onPropertySelect }: PropertyListProps) {
   const [selectedProperty, setSelectedProperty] = useState<PropertyProps | null>(null)
   // Track failed images to prevent repeated errors
   const failedImages = useRef<Set<string>>(new Set());
@@ -82,7 +80,6 @@ export default function PropertyList({ properties, onScheduleVisit, onPropertySe
               key={property.id || index}
               className="p-2 bg-white rounded-lg cursor-pointer hover:bg-slate-200 flex"
               onClick={() => {
-                console.log(`[PropertyList] Selected property: ${property.name} (${property.id})`);
                 onPropertySelect(property);
               }}
             >
@@ -117,3 +114,9 @@ export default function PropertyList({ properties, onScheduleVisit, onPropertySe
     </AnimatePresence>
   )
 }
+
+// Memoize the component to prevent unnecessary re-renders
+export default memo(PropertyList, (prevProps, nextProps) => {
+  // Only re-render if properties array reference changes
+  return prevProps.properties === nextProps.properties;
+});

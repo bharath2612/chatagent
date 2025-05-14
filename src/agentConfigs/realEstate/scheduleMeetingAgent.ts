@@ -8,6 +8,7 @@ const scheduleVisitFuncKey = process.env.NEXT_PUBLIC_SCHEDULE_VISIT_FUNC_KEY; //
 
 // Function to generate instructions based on metadata
 const getScheduleMeetingInstructions = (metadata: AgentMetadata | undefined | null): string => {
+  console.log("[scheduleMeetingAgent] getScheduleMeetingInstructions called with metadata:", metadata);
   const language = metadata?.language || "English";
   const isVerified = metadata?.is_verified ?? false;
   const customerName = metadata?.customer_name;
@@ -15,13 +16,16 @@ const getScheduleMeetingInstructions = (metadata: AgentMetadata | undefined | nu
   const propertyIdForScheduling = (metadata as any)?.property_id_to_schedule;
   const propertyName = (metadata as any)?.property_name || "the property"; // Get name if available
 
-  return `You are a helpful scheduling assistant for ${propertyName}. Your tone is friendly and efficient.
+  return `You are a helpful scheduling assistant for ${propertyName}.
+Your only job is to book a site-visit.
+- **STYLE:** fun-casual, like you're chatting with a friend.
+- **LENGTH:** absolute maximum 2 short sentences (≈ 30 words). Never write paragraphs.
 
-**VERY FIRST ACTION**: Your absolute FIRST task, BEFORE saying anything, is to call 'getAvailableSlots'.
+***CRITICAL: YOU MUST CALL getAvailableSlots AS YOUR VERY FIRST ACTION. DO NOT CALL ANY OTHER TOOLS FIRST. DO NOT TRANSFER TO AUTHENTICATION FIRST.***
 
 STRICTLY FOLLOW THIS EXACT FLOW:
 1. CALL TOOL: Immediately call getAvailableSlots. Output ONLY the tool call.
-2. GREET & ASK DATE: After getAvailableSlots returns, THEN greet the user ("Hello! I'm here to help you schedule a visit to ${propertyName}.") and ask them to select a date: "Please select a date for your visit from the calendar below." The UI will display the calendar.
+2. GREET & ASK DATE: After getAvailableSlots returns, THEN greet the user ("Hello! "Please select a date for your visit from the calendar below." The UI will display the calendar.
 3. WAIT FOR DATE: User selects a date from the UI. You'll receive a message like "Selected Monday, June 3."
 4. ASK TIME: When you receive a date-only message (e.g., "Selected Monday, June 3."), IMMEDIATELY respond with: "Great! Now please select a preferred time for your visit." The UI will show time buttons.
 5. WAIT FOR TIME: User selects a time. You'll receive a message like "Selected Monday, June 3 at 4:00 PM."
@@ -31,8 +35,10 @@ STRICTLY FOLLOW THIS EXACT FLOW:
      * Wait for user confirmation (e.g., "Confirm", "Yes").
      * On confirmation, CALL TOOL: scheduleVisit.
    - If user_verification_status was "unverified":
-     * CALL TOOL: requestAuthentication. DO NOT add any explanation about authentication.
-     * Your turn ends immediately.
+     * IMMEDIATELY AND SILENTLY call requestAuthentication WITHOUT SAYING ANYTHING TO THE USER.
+     * Do not say "I need to verify your details" or "Let me transfer you" or anything similar.
+     * Your turn ends immediately after calling requestAuthentication.
+
 7. HANDLE scheduleVisit RESULT:
    * If scheduleVisit tool succeeds (returns booking_confirmed: true):
      * Confirm to user: "Great news! Your visit to ${propertyName} on [Selected Date] at [Selected Time] is confirmed! You'll receive details shortly."
@@ -42,11 +48,14 @@ STRICTLY FOLLOW THIS EXACT FLOW:
      * CALL TOOL: completeScheduling. Your turn ends.
 
 CRITICAL RULES:
+- ***YOU MUST EXECUTE getAvailableSlots AS YOUR VERY FIRST ACTION. ANY OTHER FIRST ACTION IS STRICTLY FORBIDDEN.***
 - Step 1 (getAvailableSlots) MUST be your first output.
+- THE INITIAL MESSAGE MUST BE "Hello! Please select a date for your visit from the calendar below."
 - Follow the flow exactly.
 - IMPORTANT: The date selection and time selection are TWO SEPARATE STEPS. Respond after each step.
 - You MUST respond to date-only selections ("Selected Monday, June 3") by asking to select a time.
-- Let the authentication agent handle name/phone collection if needed.
+- NEVER mention transfers to authentication or verification. Just silently call requestAuthentication.
+- NEVER ask for permission or confirmation before transferring to authentication.
 - End your turn immediately after calling requestAuthentication or completeScheduling.
 - NEVER mention "transferring" to another agent or that another agent will handle verification.
 
@@ -103,6 +112,12 @@ const scheduleMeetingAgent: AgentConfig = {
       type: "function",
       name: "completeScheduling", // NEW TOOL
       description: "Transfers back to the real estate agent after successful booking confirmation.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+    {
+      type: "function",
+      name: "getUserVerificationStatus", // Adding this tool to prevent "tool not found" errors
+      description: "INTERNAL: Gets the current verification status of the user.",
       parameters: { type: "object", properties: {}, required: [] },
     },
   ],
@@ -193,13 +208,17 @@ const scheduleMeetingAgent: AgentConfig = {
       }
 
       if (!metadata.is_verified) {
-           console.warn("[scheduleVisit] User is not verified. This path should ideally be handled by agent calling requestAuthentication earlier based on getAvailableSlots.");
+           console.log("[scheduleVisit] User is not verified - automatically transferring to authentication agent");
            return {
-             error: "User not verified.",
-             destination_agent: "authentication", // As a fallback, still try to transfer
+             destination_agent: "authentication",
+             silentTransfer: true,
+             message: null,
              ui_display_hint: 'VERIFICATION_FORM',
-             message: "Before we confirm, I need to verify your details.",
-             silentTransfer: false,
+             came_from: 'scheduling',
+             property_id_to_schedule: property_id, 
+             property_name: propertyName, 
+             selectedDate: (metadata as any)?.selectedDate, 
+             selectedTime: (metadata as any)?.selectedTime 
            };
       }
 
@@ -244,12 +263,29 @@ const scheduleMeetingAgent: AgentConfig = {
 
         console.log("[scheduleVisit] Schedule visit successful via API:", result);
 
+        if (scheduleMeetingAgent.metadata) {
+            scheduleMeetingAgent.metadata.has_scheduled = true;
+            scheduleMeetingAgent.metadata.customer_name = customer_name; // Ensure customer_name is in metadata
+            scheduleMeetingAgent.metadata.phone_number = phone_number; // Ensure phone_number is in metadata
+            (scheduleMeetingAgent.metadata as any).property_name = propertyName; // Ensure property_name
+            (scheduleMeetingAgent.metadata as any).selectedDate = (metadata as any)?.selectedDate || actualVisitDateTime.split(' at ')[0]; // Ensure date
+            (scheduleMeetingAgent.metadata as any).selectedTime = (metadata as any)?.selectedTime || actualVisitDateTime.split(' at ')[1]; // Ensure time
+             (scheduleMeetingAgent.metadata as any).property_id_to_schedule = property_id; // Ensure property_id
+        }
+
         return { 
           booking_confirmed: true,
-          confirmed_date: actualVisitDateTime,
-          ui_display_hint: 'CHAT',
-          message: `Great news! Your visit to ${propertyName} on ${actualVisitDateTime} is confirmed! You'll receive details shortly.`,
-        };
+          // message: null, // No direct message, realEstateAgent will confirm
+          // ui_display_hint: 'CHAT', // No specific UI hint, will go to completeScheduling next
+          // All necessary data is now in scheduleMeetingAgent.metadata for completeScheduling to pick up
+          // Ensure all required fields for the confirmation message are present in the metadata for completeScheduling
+          customer_name: customer_name,
+          property_name: propertyName,
+          selectedDate: (metadata as any)?.selectedDate || actualVisitDateTime.split(' at ')[0],
+          selectedTime: (metadata as any)?.selectedTime || actualVisitDateTime.split(' at ')[1],
+          property_id: property_id,
+          has_scheduled: true
+        }; // Agent will call completeScheduling next as per instructions
 
       } catch (error: any) {
          console.error("[scheduleVisit] Exception calling schedule API:", error);
@@ -258,39 +294,88 @@ const scheduleMeetingAgent: AgentConfig = {
     },
     requestAuthentication: async () => {
       console.log("[scheduleMeeting.requestAuthentication] Transferring to authentication agent.");
-      const messageForUser = "To schedule, I first need to verify your phone number. Let's do that now.";
+      const metadata = scheduleMeetingAgent.metadata;
+      const propertyName = (metadata as any)?.property_name || metadata?.active_project || "the property";
+      const property_id = (metadata as any)?.property_id_to_schedule || (metadata as any)?.lastReturnedPropertyId;
+      
+      // Using silentTransfer: true and null message to make the transfer seamless
       return {
         destination_agent: "authentication",
-        silentTransfer: false,
-        message: messageForUser,
+        silentTransfer: true,
+        message: null,
         ui_display_hint: 'VERIFICATION_FORM',
-        came_from: 'scheduling' 
+        came_from: 'scheduling',
+        property_id_to_schedule: property_id, // Preserve the property ID 
+        property_name: propertyName, // Preserve the property name
+        selectedDate: (metadata as any)?.selectedDate, // Preserve the selected date if available
+        selectedTime: (metadata as any)?.selectedTime // Preserve the selected time if available
       };
     },
     completeScheduling: async () => {
       console.log("[scheduleMeeting.completeScheduling] Scheduling complete, transferring back to realEstate agent.");
+      const metadata = scheduleMeetingAgent.metadata as any; // Use 'as any' for easier access to custom fields
       return {
         destination_agent: "realEstate",
         silentTransfer: true,
-        has_scheduled: true,
-        ui_display_hint: 'CHAT', // Good practice to indicate next view is chat
-        message: null // Explicitly null for silent transfer if desired, though agent will respond anyway
+        message: null, // No message from this agent
+        // Pass all necessary data for realEstateAgent to confirm
+        customer_name: metadata?.customer_name,
+        is_verified: metadata?.is_verified, // Should be true
+        has_scheduled: metadata?.has_scheduled, // Should be true
+        property_name: metadata?.property_name,
+        property_id: metadata?.property_id_to_schedule, // Ensure this uses the correct field name
+        selectedDate: metadata?.selectedDate,
+        selectedTime: metadata?.selectedTime,
+        flow_context: 'from_full_scheduling' // Add the flag for realEstateAgent
       };
     },
-    // Add mock implementation for trackUserMessage (used by realEstate agent)
-    trackUserMessage: async ({ message }: { message: string }) => {
-      console.log("[ScheduleMeeting] Received trackUserMessage call (ignoring):", message);
-      // Return success without side effects - this is a no-op in scheduling agent
-      return { success: true, message: "Scheduling agent acknowledges message" };
+    // Mock implementation to prevent errors
+    getUserVerificationStatus: async () => {
+      console.log("[scheduleMeeting.getUserVerificationStatus] Checking verification status");
+      const metadata = scheduleMeetingAgent.metadata;
+      const isVerified = metadata?.is_verified === true;
+      
+      return {
+        is_verified: isVerified,
+        user_verification_status: isVerified ? "verified" : "unverified",
+        message: isVerified ? 
+          "The user is already verified." : 
+          "The user is not verified. Please use requestAuthentication to transfer to the authentication agent.",
+        ui_display_hint: 'SCHEDULING_FORM' // Maintain the current UI
+      };
     },
-    
-    // Add mock implementation for detectPropertyInMessage (used by realEstate agent)
-    detectPropertyInMessage: async ({ message }: { message: string }) => {
-      console.log("[ScheduleMeeting] Received detectPropertyInMessage call (ignoring):", message);
-      // Return "no property detected" to avoid confusing the LLM
-      return { propertyDetected: false, message: "Scheduling agent does not detect properties" };
+    // Add mock trackUserMessage to handle stray messages gracefully
+    trackUserMessage: async ({ message }: { message: string }) => {
+      console.log(`[scheduleMeeting.trackUserMessage] Received message (ignoring): "${message}". This agent primarily acts on UI selections or specific function calls.`);
+      // This tool should not produce a user-facing message or change UI on its own for this agent.
+      // It's a no-op to prevent errors from misdirected simulated messages.
+      return {
+        success: true,
+        acknowledged_by_scheduler: true,
+        message_processed: false, // Explicitly indicate no standard processing occurred
+        ui_display_hint: 'SCHEDULING_FORM' // Maintain the current UI
+      };
     }
   }
+};
+
+// Add explicit override for the transferAgents tool that gets injected by injectTransferTools utility
+// This prevents direct transfers to authentication before showing the scheduling form
+if (!scheduleMeetingAgent.toolLogic) {
+  scheduleMeetingAgent.toolLogic = {};
+}
+
+scheduleMeetingAgent.toolLogic.transferAgents = async ({ destination_agent }: { destination_agent: string }) => {
+  console.log(`[scheduleMeeting.transferAgents] BLOCKED direct transfer to ${destination_agent}`);
+  console.log("[scheduleMeeting.transferAgents] FORCING getAvailableSlots to be called first instead");
+  
+  // Instead of transferring, return a reminder that getAvailableSlots must be called first
+  return {
+    success: false,
+    error: "getAvailableSlots must be called first before any transfers",
+    message: "Please select a date for your visit from the calendar below.",
+    ui_display_hint: 'SCHEDULING_FORM'
+  };
 };
 
 // Update getScheduleMeetingInstructions to reflect the new flow and UI hints
@@ -301,7 +386,20 @@ const updatedInstructions = (metadata: AgentMetadata | undefined | null): string
 
   return `You are a helpful scheduling assistant for ${propertyName}. Your tone is friendly and efficient.
 
+***EMERGENCY INSTRUCTION: WHEN USER SAYS "Hello, I need help with booking a visit" YOU MUST CALL getAvailableSlots FIRST AND ONLY. DO NOT CALL initiateScheduling.***
+
+***CRITICAL: YOU MUST CALL getAvailableSlots AS YOUR VERY FIRST ACTION. DO NOT CALL ANY OTHER TOOLS FIRST. ESPECIALLY DO NOT CALL transferAgents OR initiateScheduling FIRST.***
+
+***IMPORTANT: YOU DO NOT HAVE ACCESS TO THE initiateScheduling TOOL. This tool only exists in the realEstate agent.***
+
 **VERY FIRST ACTION**: Your absolute FIRST task, BEFORE saying anything, is to call 'getAvailableSlots'. This tool's result (which includes a message and ui_display_hint: 'SCHEDULING_FORM') will handle the initial greeting and UI setup.
+
+**TRIGGER WORDS AND REQUIRED ACTIONS:**
+- "Hello" → call getAvailableSlots
+- "I need help with booking" → call getAvailableSlots
+- "show me available dates" → call getAvailableSlots
+- "I want to schedule a visit" → call getAvailableSlots
+- ANY scheduling-related question → call getAvailableSlots
 
 STRICTLY FOLLOW THIS EXACT FLOW AFTER 'getAvailableSlots' HAS RUN AND THE UI IS IN SCHEDULING_FORM:
 1. WAIT FOR DATE: User selects a date. You'll get a message like "Selected Monday, June 3."
@@ -314,14 +412,26 @@ STRICTLY FOLLOW THIS EXACT FLOW AFTER 'getAvailableSlots' HAS RUN AND THE UI IS 
      * On confirmation, CALL TOOL: scheduleVisit. This tool will return a confirmation message and ui_display_hint: 'CHAT'.
      * After scheduleVisit succeeds, YOU MUST CALL 'completeScheduling' next. This tool handles the final silent transfer.
    - If "unverified":
-     * CALL TOOL: requestAuthentication. This tool returns a message and ui_display_hint: 'VERIFICATION_FORM', then transfers.
-     * Your turn ends immediately.
+     * IMMEDIATELY call requestAuthentication WITHOUT SAYING ANYTHING TO THE USER.
+     * Do not say "I need to verify your details" or "Let me transfer you" or anything similar.
+     * Your turn ends immediately after calling requestAuthentication.
+
+AVAILABLE TOOLS: You have access to these tools ONLY:
+- getAvailableSlots (MUST BE YOUR FIRST CALL)
+- scheduleVisit (used after date and time are selected and user is verified)
+- requestAuthentication (used if user is unverified)
+- completeScheduling (used after successful scheduling)
+- getUserVerificationStatus (get current verification status)
 
 CRITICAL RULES:
+- ***YOUR VERY FIRST ACTION MUST BE TO CALL getAvailableSlots. DO NOT CALL ANY OTHER TOOL FIRST.***
+- ***NEVER CALL initiateScheduling - THIS TOOL DOES NOT EXIST IN YOUR AGENT***
 - 'getAvailableSlots' is ALWAYS first. Its result message and UI hint manage the initial display.
 - After user selects a DATE, you ask for TIME.
 - After user selects a TIME, you proceed to VERIFICATION check or CONFIRMATION.
-- If calling 'requestAuthentication', your turn ends.
+- NEVER mention transfers to authentication or verification processes to the user.
+- If user is unverified, IMMEDIATELY call requestAuthentication WITHOUT saying anything first.
+- Your response MUST BE EMPTY when calling requestAuthentication.
 - If 'scheduleVisit' is successful, you MUST immediately call 'completeScheduling'. 'completeScheduling' is silent and transfers back.
 
 LANGUAGE: Respond ONLY in ${language}.`
