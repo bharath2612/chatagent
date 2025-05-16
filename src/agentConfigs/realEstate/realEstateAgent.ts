@@ -125,8 +125,16 @@ LANGUAGE INSTRUCTIONS:
 - **LENGTH:** absolute maximum 2 short sentences (≈ 30 words). Never write paragraphs.
 - Keep answers concise, especially when property cards (PROPERTY_LIST) or images (IMAGE_GALLERY) are being displayed by the UI based on your tool results. Let the UI show the details.
 
+SPECIAL TRIGGER MESSAGES:
+- Messages that start with {Trigger msg: ...} are NOT from the user. These are system triggers for specific automated responses.
+- When you receive a message like {Trigger msg: Explain details of this [property name]}, immediately provide a brief 2-line summary of that property. Focus on its BEST features and price range.
+- When you receive a message like {Trigger msg: Ask user whether they want to schedule a visit to this property}, respond with a friendly invitation to schedule a visit, such as "Would you like to schedule a visit to see this property in person?"
+- Always keep trigger message responses super short (1-2 sentences max). For property summaries, highlight standout features, location benefits, or value proposition.
+- These trigger messages help create a smoother UI experience
+- NEVER mention that you received a trigger message. Just respond appropriately as if it's a natural part of the conversation.
+
 TOOL USAGE & UI HINTS:
-- ALWAYS use 'trackUserMessage' at the start of handling ANY user message.
+- ALWAYS use 'trackUserMessage' at the start of handling ANY user message (not trigger messages).
 - ALWAYS use 'detectPropertyInMessage' *after* 'trackUserMessage'.
 - Use 'updateActiveProject' ONLY IF 'detectPropertyInMessage' indicates it's needed.
 - **General Property List Request:** When the user asks for a general list (e.g., "show me your properties"), use 'getProjectDetails' without filters. It returns ui_display_hint: 'PROPERTY_LIST'. Your text MUST be brief: "Here are the properties I found. You can click on the cards below for more details."
@@ -363,6 +371,17 @@ const realEstateAgent: AgentConfig = {
     trackUserMessage: async ({ message }: { message: string }) => {
         const metadata = realEstateAgent.metadata as AgentMetadata; // Use the extended AgentMetadata
         
+        // Check for special trigger messages
+        if (message.startsWith('{Trigger msg:')) {
+            console.log("[trackUserMessage] Detected special trigger message:", message);
+            // Don't process trigger messages further - let the agent handle them directly
+            return { 
+                success: true, 
+                is_trigger_message: true,
+                message: "This is a special trigger message. Respond directly without tool calls."
+            };
+        }
+        
         // PRIORITY 1: Handle specific flow contexts first
         if (metadata?.flow_context === 'from_scheduling_verification' && message === "Finalize scheduling confirmation") {
             const confirmationMsg = `Great news, ${metadata.customer_name || 'there'}! Your visit to ${metadata.property_name || 'the property'} on ${metadata.selectedDate} at ${metadata.selectedTime} is confirmed! You'll receive all details shortly.`;
@@ -513,6 +532,33 @@ const realEstateAgent: AgentConfig = {
 
     detectPropertyInMessage: async ({ message }: { message: string }) => {
         console.log(`[detectPropertyInMessage] Analyzing message: "${message}"`);
+        
+        // Skip processing for trigger messages to avoid unnecessary property detection
+        if (message.startsWith('{Trigger msg:')) {
+            console.log("[detectPropertyInMessage] Skipping property detection for trigger message");
+            
+            // Extract property name from trigger message for context (if present)
+            const triggerPropertyRegex = /\{Trigger msg: (?:Explain details of this|Ask user whether they want to schedule a visit to this property) (.+?)\}/i;
+            const match = message.match(triggerPropertyRegex);
+            
+            if (match && match[1]) {
+                const propertyNameFromTrigger = match[1].trim();
+                console.log(`[detectPropertyInMessage] Property name extracted from trigger: "${propertyNameFromTrigger}"`);
+                
+                return {
+                    propertyDetected: true,
+                    detectedProperty: propertyNameFromTrigger,
+                    shouldUpdateActiveProject: false, // Don't update project for trigger messages
+                    isTriggerMessage: true
+                };
+            }
+            
+            return { 
+                propertyDetected: false, 
+                isTriggerMessage: true 
+            };
+        }
+        
         const metadata = realEstateAgent.metadata;
         const project_names = metadata?.project_names || [];
         console.log(`[detectPropertyInMessage] Available properties:`, project_names);

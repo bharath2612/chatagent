@@ -285,6 +285,16 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
     setSelectedPropertyDetails(property);
     setActiveDisplayMode('PROPERTY_DETAILS');
     // setPropertyListData(null); // Keep list data if we want to go "back"
+    
+    // Send a trigger message for the agent to explain this property
+    setTimeout(() => {
+      sendTriggerMessage(`{Trigger msg: Explain details of this ${property.name}}`);
+      
+      // Schedule the follow-up trigger to ask about scheduling
+      setTimeout(() => {
+        sendTriggerMessage(`{Trigger msg: Ask user whether they want to schedule a visit to this property}`);
+      }, 3000); // 3 seconds delay before asking about scheduling
+    }, 500); // Small delay to ensure UI has updated first
   };
 
   const handleClosePropertyDetails = () => {
@@ -513,6 +523,18 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
     // When response is done, log which agent completed the response
     if (serverEvent.type === "response.done") {
       console.log(`[Agent Complete] ${selectedAgentName} finished response`);
+    }
+
+    // Filter out trigger messages from being displayed in the transcript
+    if (serverEvent.type === "conversation.item.created" && 
+        serverEvent.item?.role === 'user' && 
+        serverEvent.item?.content?.[0]?.text && 
+        typeof serverEvent.item.content[0].text === 'string' &&
+        serverEvent.item.content[0].text.startsWith('{Trigger msg:')) {
+      
+      console.log("[handleServerEvent] Filtering out trigger message from transcript");
+      assistantMessageHandledLocally = true; // Skip further processing
+      return; // Don't process this event further
     }
 
     // --- Handle Function Call Output --- 
@@ -1700,6 +1722,37 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
     handleGetAllProperties,
     initialSessionSetupDoneRef
   ]);
+
+  // Add a helper function to send trigger messages
+  const sendTriggerMessage = useCallback((triggerText: string) => {
+    if (sessionStatus !== 'CONNECTED' || !dcRef.current) {
+      console.log("[UI] Cannot send trigger message - not connected");
+      return;
+    }
+    
+    // Stop any current response first
+    stopCurrentResponse(sendClientEvent);
+    
+    const triggerMessageId = generateSafeId();
+    console.log(`[UI] Sending trigger message: "${triggerText}"`);
+    
+    // Send the trigger message (not added to visible transcript)
+    sendClientEvent(
+      {
+        type: "conversation.item.create",
+        item: {
+          id: triggerMessageId,
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: triggerText }],
+        },
+      },
+      "(UI trigger message)"
+    );
+    
+    // Trigger agent response
+    sendClientEvent({ type: "response.create" }, "(trigger response for UI trigger)");
+  }, [sessionStatus, dcRef, sendClientEvent, stopCurrentResponse, generateSafeId]);
 
   return (
     <div
