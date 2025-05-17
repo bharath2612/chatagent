@@ -569,10 +569,14 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
         serverEvent.item?.role === 'user' && 
         serverEvent.item?.content?.[0]?.text && 
         typeof serverEvent.item.content[0].text === 'string' &&
-        serverEvent.item.content[0].text.startsWith('{Trigger msg:')) {
+        (
+            serverEvent.item.content[0].text.startsWith('{Trigger msg:') ||
+            serverEvent.item.content[0].text === "Finalize scheduling confirmation"
+        )
+    ) {
       
-      console.log("[handleServerEvent] Filtering out trigger message from transcript");
-      assistantMessageHandledLocally = true; // Skip further processing
+      console.log("[handleServerEvent] Filtering out trigger/system message from transcript:", serverEvent.item.content[0].text);
+      // assistantMessageHandledLocally = true; // This was a bug, should not be set here
       return; // Don't process this event further
     }
 
@@ -1389,9 +1393,15 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
                            selectedAgentName === 'authentication';
 
                        // If the agent doesn't auto-trigger, then we send a simulated "hi" to get it started.
-                       const shouldSendSimulatedHi = !agentAutoTriggersFirstAction;
+                       // MODIFICATION: Also don't send "hi" if returning to realEstate after verification,
+                       // as a specific trigger is already being sent.
+                       const isReturningToRealEstateAfterVerification = 
+                           selectedAgentName === 'realEstate' &&
+                           (agentMetadata as any)?.flow_context === 'from_scheduling_verification';
+
+                       const shouldSendSimulatedHi = !agentAutoTriggersFirstAction && !isReturningToRealEstateAfterVerification;
                        
-                       console.log(`[Effect] Updating session. Agent: ${selectedAgentName}, Auto-triggers: ${agentAutoTriggersFirstAction}, Sending simulated 'hi': ${shouldSendSimulatedHi}`);
+                       console.log(`[Effect] Updating session. Agent: ${selectedAgentName}, Auto-triggers: ${agentAutoTriggersFirstAction}, ReturningPostVerification: ${isReturningToRealEstateAfterVerification}, Sending simulated 'hi': ${shouldSendSimulatedHi}`);
                        updateSession(shouldSendSimulatedHi); 
                        // Mark setup truly complete *after* successful updateSession
                        // initialSessionSetupDoneRef.current = true; // Already set above
@@ -1561,32 +1571,22 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       
       // Check if this is a transition from authentication agent AND we haven't shown the success message yet
       if (wasFromAuthentication && !hasShownSuccessMessageRef.current) {
-        console.log("[Agent Change] Detected transition from authentication to realEstate - showing verification success");
+        console.log("[Agent Change] Detected transition from authentication to realEstate - showing verification success UI");
         
         // Mark that we've shown the success message to prevent infinite loops
         hasShownSuccessMessageRef.current = true;
         
-        // Set success flag without triggering rerendering loop
+        // Set success flag and UI state for verification success display
+        // The actual spoken confirmation will come from the realEstateAgent via the trigger from useHandleServerEvent
         setVerificationSuccessful(true);
-        setShowVerificationSuccess(true);
+        setShowVerificationSuccess(true); // This can be used if there's a separate UI element for it
         
-        // Hide the success message after a few seconds
+        // Hide the success message UI after a few seconds (this is for the separate UI element if any)
         setTimeout(() => {
           setShowVerificationSuccess(false);
-        }, 5000); // Increased from 3000 to 5000 (5 seconds)
+        }, 5000); 
         
-        // Trigger a welcome back message from the realEstate agent
-        setTimeout(() => {
-          if (canCreateResponse()) {
-            // const welcomeMsg = "Thank you for verifying your identity. How can I help you with properties today?";
-            // Make the message very distinct to check if this update is visible
-            const welcomeMsg = `Welcome back! How can I help you with properties today?`;
-            addTranscriptMessage(generateSafeId(), 'assistant', welcomeMsg);
-            
-            // Trigger the agent to generate a proper response
-            sendClientEvent({ type: "response.create" }, "(trigger response after verification)");
-          }
-        }, 500);
+        // REMOVED THE BLOCK THAT SENDS "Welcome back!" MESSAGE AND response.create
       }
       
       setIsVerifying(false); // Hide verification UI
@@ -1598,8 +1598,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
     // Update previous agent ref for next transition
     prevAgentNameRef.current = selectedAgentName;
     
-    // Reset setup flag if agent changes (handled in separate effect)
-  }, [selectedAgentName, selectedProperty, agentMetadata, canCreateResponse, generateSafeId, addTranscriptMessage, sendClientEvent]);
+  }, [selectedAgentName, selectedProperty, agentMetadata, canCreateResponse, generateSafeId, addTranscriptMessage, sendClientEvent, setActiveDisplayMode, setLastAgentTextMessage, setIsVerifying, setShowTimeSlots, setShowOtpScreen, setSelectedProperty, setAvailableSlots, setVerificationSuccessful, setShowVerificationSuccess]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") {
@@ -2069,11 +2068,13 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
   }, [sessionStatus, dcRef, sendClientEvent, stopCurrentResponse, generateSafeId]);
 
   // Call this function after successful verification to prompt the agent to confirm scheduling
-  useEffect(() => {
-    if (verificationSuccessful) {
-      sendSchedulingConfirmationTrigger();
-    }
-  }, [verificationSuccessful, sendSchedulingConfirmationTrigger]);
+  // REMOVED EFFECT START
+  // useEffect(() => {
+  //   if (verificationSuccessful) {
+  //     sendSchedulingConfirmationTrigger();
+  //   }
+  // }, [verificationSuccessful, sendSchedulingConfirmationTrigger]);
+  // REMOVED EFFECT END
 
   return (
     <div

@@ -369,12 +369,25 @@ const realEstateAgent: AgentConfig = {
   toolLogic: {
     // --- Internal Tools --- 
     trackUserMessage: async ({ message }: { message: string }) => {
-        const metadata = realEstateAgent.metadata as AgentMetadata; // Use the extended AgentMetadata
+        const metadata = realEstateAgent.metadata as AgentMetadata;
+        
+        // Special handling for scheduling confirmation trigger
+        if (message === "Finalize scheduling confirmation") {
+            console.log("[trackUserMessage] Handling scheduling confirmation trigger");
+            
+            // Instead of returning a message directly, trigger completeScheduling
+            // This will ensure proper function call handling in the response
+            return {
+                function_call: {
+                    name: "completeScheduling",
+                    arguments: JSON.stringify({})
+                }
+            };
+        }
         
         // Check for special trigger messages
         if (message.startsWith('{Trigger msg:')) {
             console.log("[trackUserMessage] Detected special trigger message:", message);
-            // Don't process trigger messages further - let the agent handle them directly
             return { 
                 success: true, 
                 is_trigger_message: true,
@@ -1056,30 +1069,76 @@ const realEstateAgent: AgentConfig = {
         console.log("  - active_project_id:", metadataAny?.active_project_id);
         console.log("  - active_project:", metadata?.active_project);
         console.log("  - project_ids:", metadata?.project_ids);
+        console.log("  - project_names:", metadataAny?.project_names);
+        console.log("  - project_id_map:", metadataAny?.project_id_map);
         
-        // Try multiple fallbacks for property ID
         let targetPropertyId = property_id;
-        
-        if (!targetPropertyId && metadataAny?.active_project_id) {
-            console.log("[initiateScheduling] Using active_project_id:", metadataAny.active_project_id);
+        let propertyNameForScheduling: string | undefined = undefined;
+
+        if (targetPropertyId) {
+            // Try to find name for the given targetPropertyId
+            if (metadataAny?.project_id_map) {
+                for (const name in metadataAny.project_id_map) {
+                    if (metadataAny.project_id_map[name] === targetPropertyId) {
+                        propertyNameForScheduling = name;
+                        console.log(`[initiateScheduling] Found property name '${propertyNameForScheduling}' for id '${targetPropertyId}' via project_id_map.`);
+                        break;
+                    }
+                }
+            }
+            if (!propertyNameForScheduling && metadataAny?.project_ids && metadataAny?.project_names) {
+                const idx = metadataAny.project_ids.indexOf(targetPropertyId);
+                if (idx !== -1 && metadataAny.project_names[idx]) {
+                    propertyNameForScheduling = metadataAny.project_names[idx];
+                    console.log(`[initiateScheduling] Found property name '${propertyNameForScheduling}' for id '${targetPropertyId}' via project_ids/project_names arrays.`);
+                }
+            }
+        } else if (metadataAny?.active_project_id) {
+            // If no property_id provided, use active project
             targetPropertyId = metadataAny.active_project_id;
+            propertyNameForScheduling = metadata?.active_project && metadata?.active_project !== "N/A" ? metadata.active_project : undefined;
+            console.log(`[initiateScheduling] No property_id in args, using active project id '${targetPropertyId}' and name '${propertyNameForScheduling}'.`);
         }
         
+        // If targetPropertyId is set (either from args or active_project_id) but name is still not found, try another lookup
+        if (targetPropertyId && !propertyNameForScheduling) {
+            if (metadataAny?.project_id_map) {
+                for (const name in metadataAny.project_id_map) {
+                    if (metadataAny.project_id_map[name] === targetPropertyId) {
+                        propertyNameForScheduling = name;
+                        console.log(`[initiateScheduling] (Fallback lookup) Found property name '${propertyNameForScheduling}' for id '${targetPropertyId}' via project_id_map.`);
+                        break;
+                    }
+                }
+            }
+            if (!propertyNameForScheduling && metadataAny?.project_ids && metadataAny?.project_names) {
+                const idx = metadataAny.project_ids.indexOf(targetPropertyId);
+                if (idx !== -1 && metadataAny.project_names[idx]) {
+                    propertyNameForScheduling = metadataAny.project_names[idx];
+                    console.log(`[initiateScheduling] (Fallback lookup) Found property name '${propertyNameForScheduling}' for id '${targetPropertyId}' via project_ids/project_names arrays.`);
+                }
+            }
+        }
+
+        // If still no specific property ID or name, and we have defaults
         if (!targetPropertyId && metadata?.project_ids && metadata.project_ids.length > 0) {
-            console.log("[initiateScheduling] Falling back to first project_id:", metadata.project_ids[0]);
             targetPropertyId = metadata.project_ids[0];
+            console.log(`[initiateScheduling] No specific property_id, falling back to first project_id: ${targetPropertyId}`);
+            if (!propertyNameForScheduling && metadata?.project_names && metadata.project_names.length > 0) {
+                 propertyNameForScheduling = metadata.project_names[0];
+                 console.log(`[initiateScheduling] Corresponding name for fallback ID: ${propertyNameForScheduling}`);
+            }
         }
         
-        // If we still don't have a property ID, proceed anyway and let the scheduling agent handle it
-        if (!targetPropertyId) {
-            console.log("[initiateScheduling] No property ID available, proceeding with transfer anyway");
-            } else {
-            console.log(`[initiateScheduling] Transferring to scheduleMeeting agent for property ID: ${targetPropertyId}`);
-        }
+        // Final fallback for property name
+        propertyNameForScheduling = propertyNameForScheduling || "the selected property";
+        
+        console.log(`[initiateScheduling] Transferring to scheduleMeeting agent with property ID: '${targetPropertyId || 'undefined'}', Name: '${propertyNameForScheduling}'`);
         
         return {
             destination_agent: "scheduleMeeting",
-            property_id_to_schedule: targetPropertyId, // This might be undefined, but that's OK
+            property_id_to_schedule: targetPropertyId, // This might be undefined if no property context
+            property_name: propertyNameForScheduling, 
             silentTransfer: true,
             message: null // Setting this to null ensures the agent doesn't say anything
         };
@@ -1172,29 +1231,45 @@ const realEstateAgent: AgentConfig = {
       const metadata = realEstateAgent.metadata as any;
       
       // Check if we have scheduling data
-      if (metadata?.selectedDate && metadata?.selectedTime && metadata?.property_name) {
-        const confirmationMsg = `Great news, ${metadata.customer_name || 'there'}! Your visit to ${metadata.property_name || 'the property'} on ${metadata.selectedDate} at ${metadata.selectedTime} is confirmed! You'll receive all details shortly.`;
+      if (metadata?.selectedDate && metadata?.selectedTime && metadata?.customer_name) {
+        // Make sure we have a property name (use defaults if not available)
+        const propertyName = metadata.property_name || "the property";
+        
+        // Create a friendly confirmation message
+        const confirmationMsg = `Great news, ${metadata.customer_name}! Your visit to ${propertyName} on ${metadata.selectedDate} at ${metadata.selectedTime} is confirmed! You'll receive all details shortly.`;
         console.log("[realEstateAgent.completeScheduling] Confirming schedule with: ", confirmationMsg);
         
         // Mark as scheduled in agent metadata
         if (realEstateAgent.metadata) {
-          (realEstateAgent.metadata as any).has_scheduled = true;
-          (realEstateAgent.metadata as any).is_verified = true;
+          realEstateAgent.metadata.has_scheduled = true;
+          realEstateAgent.metadata.is_verified = true;
+          
+          // Clear flow context to prevent re-processing
+          delete (realEstateAgent.metadata as any).flow_context;
         }
         
+        // Return success with confirmation message
         return {
           success: true,
           message: confirmationMsg,
           ui_display_hint: 'CHAT'
         };
+      } else {
+        // Handle missing data case
+        console.error("[realEstateAgent.completeScheduling] Missing required scheduling data", {
+          selectedDate: metadata?.selectedDate,
+          selectedTime: metadata?.selectedTime,
+          customer_name: metadata?.customer_name
+        });
+        
+        // Return a generic message if we can't find the specific details
+        const genericMsg = "Your booking has been confirmed. Thank you!";
+        return {
+          success: true,
+          message: genericMsg,
+          ui_display_hint: 'CHAT'
+        };
       }
-      
-      // If no scheduling data, just return a generic confirmation
-      return {
-        success: true,
-        message: "Verification complete! How can I help you?",
-        ui_display_hint: 'CHAT'
-      };
     }
   },
 };
