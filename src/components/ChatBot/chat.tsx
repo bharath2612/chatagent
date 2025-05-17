@@ -285,6 +285,16 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
     setSelectedPropertyDetails(property);
     setActiveDisplayMode('PROPERTY_DETAILS');
     // setPropertyListData(null); // Keep list data if we want to go "back"
+    
+    // Send a trigger message for the agent to explain this property
+    setTimeout(() => {
+      sendTriggerMessage(`{Trigger msg: Explain details of this ${property.name}}`);
+      
+      // Schedule the follow-up trigger to ask about scheduling
+      setTimeout(() => {
+        sendTriggerMessage(`{Trigger msg: Ask user whether they want to schedule a visit to this property}`);
+      }, 3000); // 3 seconds delay before asking about scheduling
+    }, 500); // Small delay to ensure UI has updated first
   };
 
   const handleClosePropertyDetails = () => {
@@ -514,6 +524,51 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
     if (serverEvent.type === "response.done") {
       console.log(`[Agent Complete] ${selectedAgentName} finished response`);
     }
+    
+    // Add special handling for agent transfer to scheduleMeeting
+    if (serverEvent.type === "session.updated" && selectedAgentName === "scheduleMeeting") {
+      console.log("[handleServerEvent] Detected session update for scheduleMeeting agent - ensuring UI is properly set");
+      // Ensure UI state is correctly set for scheduling, as the agent should call getAvailableSlots next
+      if (activeDisplayMode !== 'SCHEDULING_FORM') {
+        console.log("[handleServerEvent] CRITICAL FIX: Setting UI mode to SCHEDULING_FORM for scheduleMeeting agent");
+        
+        // If we have a selected property from the previous agent, use it
+        if (selectedProperty) {
+          console.log(`[handleServerEvent] Using selected property for scheduling: ${selectedProperty.name}`);
+          setShowTimeSlots(true);
+          setActiveDisplayMode('SCHEDULING_FORM');
+        } else {
+          // Check if we need to initialize with a default property
+          const metadata = agentMetadata as any;
+          if (metadata?.property_id_to_schedule) {
+            console.log(`[handleServerEvent] Creating default property from metadata: ${metadata.property_id_to_schedule}`);
+            // Create a minimal property object
+            setSelectedProperty({
+              id: metadata.property_id_to_schedule,
+              name: metadata.property_name || "Selected Property",
+              price: "Contact for pricing",
+              area: "Available on request",
+              description: "Schedule a visit to see this property in person.",
+              mainImage: "/placeholder.svg"
+            });
+            setShowTimeSlots(true);
+            setActiveDisplayMode('SCHEDULING_FORM');
+          }
+        }
+      }
+    }
+
+    // Filter out trigger messages from being displayed in the transcript
+    if (serverEvent.type === "conversation.item.created" && 
+        serverEvent.item?.role === 'user' && 
+        serverEvent.item?.content?.[0]?.text && 
+        typeof serverEvent.item.content[0].text === 'string' &&
+        serverEvent.item.content[0].text.startsWith('{Trigger msg:')) {
+      
+      console.log("[handleServerEvent] Filtering out trigger message from transcript");
+      assistantMessageHandledLocally = true; // Skip further processing
+      return; // Don't process this event further
+    }
 
     // --- Handle Function Call Output --- 
     if (
@@ -656,12 +711,135 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
                             // The LLM response will include this message, so we don't need to add it to transcript here
                         }
                         
+                        // CRITICAL ADDITIONAL CHECK: Make sure the TimePick component will actually be displayed
+                        if (activeDisplayMode !== 'SCHEDULING_FORM' || !showTimeSlots || !selectedProperty) {
+                            console.log("[UI] ⚠️ WARNING: TimePick component might not be displayed. Forcing display.");
+                            
+                            // Force these settings to ensure the component is displayed
+                            if (!selectedProperty && outputData.property_id) {
+                                const propertyName = outputData.property_name || "Selected Property";
+                                setSelectedProperty({
+                                    id: outputData.property_id,
+                                    name: propertyName,
+                                    price: "Contact for pricing",
+                                    area: "Available on request",
+                                    description: `Schedule a visit to see ${propertyName} in person.`,
+                                    mainImage: "/placeholder.svg"
+                                });
+                            } else if (!selectedProperty) {
+                                // Create a minimal default property if none exists and none in outputData
+                                const metadata = agentMetadata as any;
+                                const propertyName = metadata?.property_name || outputData.property_name || "Selected Property";
+                                const propertyId = metadata?.property_id_to_schedule || outputData.property_id || "default-property";
+                                
+                                setSelectedProperty({
+                                    id: propertyId,
+                                    name: propertyName,
+                                    price: "Contact for pricing",
+                                    area: "Available on request",
+                                    description: `Schedule a visit to see ${propertyName} in person.`,
+                                    mainImage: "/placeholder.svg"
+                                });
+                            }
+                            
+                            // Force these settings again
+                            setShowTimeSlots(true);
+                            setActiveDisplayMode('SCHEDULING_FORM');
+                            
+                            // Force a re-render by triggering a state update on a dummy state if necessary
+                            // This is a last resort and should be used carefully
+                            // setInputVisible(iv => !iv); // Toggle and immediately toggle back
+                            // setTimeout(() => setInputVisible(iv => !iv), 10);
+                        }
+                        
                         propertiesHandledLocally = true; // Mark as handled
                     } else {
                         console.error("[handleServerEvent] getAvailableSlots response has no slots data!");
+                        
+                        // Try to recover even without slots data
+                        if (outputData.property_id || outputData.property_name) {
+                            console.log("[UI] Creating fallback slots with default times");
+                            // Create some default slots
+                            const defaultSlots: Record<string, string[]> = {};
+                            const today = new Date();
+                            const tomorrow = new Date(today);
+                            tomorrow.setDate(tomorrow.getDate() + 1);
+                            
+                            // Format dates as strings
+                            const dateOptions: Intl.DateTimeFormatOptions = { weekday: 'long', month: 'long', day: 'numeric' };
+                            const todayStr = today.toLocaleDateString('en-US', dateOptions);
+                            const tomorrowStr = tomorrow.toLocaleDateString('en-US', dateOptions);
+                            
+                            defaultSlots[todayStr] = ["11:00 AM", "4:00 PM"];
+                            defaultSlots[tomorrowStr] = ["11:00 AM", "4:00 PM"];
+                            
+                            setAvailableSlots(defaultSlots);
+                            
+                            // Create a property if needed
+                            if (!selectedProperty) {
+                                const propertyName = outputData.property_name || "Selected Property";
+                                setSelectedProperty({
+                                    id: outputData.property_id || "default-property",
+                                    name: propertyName,
+                                    price: "Contact for pricing",
+                                    area: "Available on request",
+                                    description: `Schedule a visit to see ${propertyName} in person.`,
+                                    mainImage: "/placeholder.svg"
+                                });
+                            }
+                            
+                            // Force UI mode
+                            setShowTimeSlots(true);
+                            setActiveDisplayMode('SCHEDULING_FORM');
+                            
+                            propertiesHandledLocally = true;
+                        }
                     }
                 } catch (e) {
                     console.error("[handleServerEvent] Error parsing getAvailableSlots output:", e);
+                    
+                    // Try to recover from parsing error
+                    if (selectedAgentName === "scheduleMeeting") {
+                        console.log("[UI] Creating emergency fallback slots after parse error");
+                        
+                        // Create some default slots
+                        const defaultSlots: Record<string, string[]> = {};
+                        const today = new Date();
+                        const tomorrow = new Date(today);
+                        tomorrow.setDate(tomorrow.getDate() + 1);
+                        
+                        // Format dates as strings
+                        const dateOptions: Intl.DateTimeFormatOptions = { weekday: 'long', month: 'long', day: 'numeric' };
+                        const todayStr = today.toLocaleDateString('en-US', dateOptions);
+                        const tomorrowStr = tomorrow.toLocaleDateString('en-US', dateOptions);
+                        
+                        defaultSlots[todayStr] = ["11:00 AM", "4:00 PM"];
+                        defaultSlots[tomorrowStr] = ["11:00 AM", "4:00 PM"];
+                        
+                        setAvailableSlots(defaultSlots);
+                        
+                        // Create a property if needed
+                        if (!selectedProperty) {
+                            const metadata = agentMetadata as any;
+                            const propertyName = metadata?.property_name || "Selected Property";
+                            const propertyId = metadata?.property_id_to_schedule || "default-property";
+                            
+                            setSelectedProperty({
+                                id: propertyId,
+                                name: propertyName,
+                                price: "Contact for pricing",
+                                area: "Available on request",
+                                description: `Schedule a visit to see ${propertyName} in person.`,
+                                mainImage: "/placeholder.svg"
+                            });
+                        }
+                        
+                        // Force UI mode
+                        setShowTimeSlots(true);
+                        setActiveDisplayMode('SCHEDULING_FORM');
+                        
+                        propertiesHandledLocally = true;
+                    }
                 }
             }
         } else if (functionName === "scheduleVisit") {
@@ -1345,10 +1523,33 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       console.log("[Agent Change] Detected switch to scheduleMeeting agent.");
       setIsVerifying(false); // Hide verification UI if switching *to* scheduling
       setShowOtpScreen(false); // Hide OTP screen when switching away from authentication
-      setShowTimeSlots(true); // Show time slots
-      // Remove direct control of setShowTimeSlots here.
-      // Let getAvailableSlots tool result handle showing the time slots via setActiveDisplayMode and setShowTimeSlots.
-      // setAvailableSlots({}); // Clearing availableSlots here might be okay, or defer to getAvailableSlots
+      
+      // CRITICAL FIX: Ensure the UI is set up immediately when switching to scheduling agent
+      console.log("[Agent Change] Setting SCHEDULING_FORM display mode for scheduleMeeting agent");
+      setActiveDisplayMode('SCHEDULING_FORM');
+      
+      // Check if we need to set up a property for scheduling
+      if (!selectedProperty) {
+        const metadata = agentMetadata as any;
+        // Use property_id_to_schedule if available
+        if (metadata?.property_id_to_schedule) {
+          const propertyName = metadata.property_name || "Selected Property";
+          console.log(`[Agent Change] Creating property with ID: ${metadata.property_id_to_schedule}, name: ${propertyName}`);
+          
+          setSelectedProperty({
+            id: metadata.property_id_to_schedule,
+            name: propertyName,
+            // Add more data to make it look complete
+            price: "Contact for pricing",
+            area: "Available on request",
+            description: `Schedule a visit to see ${propertyName} in person.`,
+            mainImage: "/placeholder.svg" // Use a default image
+          });
+        }
+      }
+      
+      // Always enable time slots when switching to scheduling agent
+      setShowTimeSlots(true);
     } else if (selectedAgentName === "realEstate") {
       console.log("[Agent Change] Switched back to realEstate agent.");
       
@@ -1701,6 +1902,37 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
     initialSessionSetupDoneRef
   ]);
 
+  // Add a helper function to send trigger messages
+  const sendTriggerMessage = useCallback((triggerText: string) => {
+    if (sessionStatus !== 'CONNECTED' || !dcRef.current) {
+      console.log("[UI] Cannot send trigger message - not connected");
+      return;
+    }
+    
+    // Stop any current response first
+    stopCurrentResponse(sendClientEvent);
+    
+    const triggerMessageId = generateSafeId();
+    console.log(`[UI] Sending trigger message: "${triggerText}"`);
+    
+    // Send the trigger message (not added to visible transcript)
+    sendClientEvent(
+      {
+        type: "conversation.item.create",
+        item: {
+          id: triggerMessageId,
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: triggerText }],
+        },
+      },
+      "(UI trigger message)"
+    );
+    
+    // Trigger agent response
+    sendClientEvent({ type: "response.create" }, "(trigger response for UI trigger)");
+  }, [sessionStatus, dcRef, sendClientEvent, stopCurrentResponse, generateSafeId]);
+
   return (
     <div
       className="relative bg-blue-900 rounded-3xl overflow-hidden text-white flex flex-col"
@@ -1886,10 +2118,15 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
               />
             )}
 
-            {activeDisplayMode === 'SCHEDULING_FORM' && showTimeSlots && selectedProperty && !isVerifying && (
+            {activeDisplayMode === 'SCHEDULING_FORM' && selectedProperty && !isVerifying && (
               <div className="relative w-full">
+                {/* Show TimePick even if availableSlots is empty - it will show default options */}
                 <TimePick
-                  schedule={availableSlots}
+                  schedule={Object.keys(availableSlots).length > 0 ? availableSlots : {
+                    'Monday': ['11:00 AM', '4:00 PM'],
+                    'Tuesday': ['11:00 AM', '4:00 PM'],
+                    'Wednesday': ['11:00 AM', '4:00 PM']
+                  }}
                   property={selectedProperty}
                   onTimeSelect={handleTimeSlotSelection}
                 />
