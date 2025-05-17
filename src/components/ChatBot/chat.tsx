@@ -299,7 +299,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       // Schedule the follow-up trigger to ask about scheduling
       setTimeout(() => {
         sendTriggerMessage(`{Trigger msg: Ask user whether they want to schedule a visit to this property}`);
-      }, 3000); // 3 seconds delay before asking about scheduling
+      }, 9000); // 3 seconds delay before asking about scheduling
     }, 500); // Small delay to ensure UI has updated first
   };
 
@@ -2035,6 +2035,45 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       setStartTime(new Date().toISOString());
     }
   }, [sessionStatus, startTime]);
+
+  // Add a helper function to send a trigger message for scheduling confirmation
+  const sendSchedulingConfirmationTrigger = useCallback(() => {
+    if (sessionStatus !== 'CONNECTED' || !dcRef.current) {
+      console.log("[UI] Cannot send scheduling confirmation trigger - not connected");
+      return;
+    }
+    
+    // Stop any current response first
+    stopCurrentResponse(sendClientEvent);
+    
+    const triggerMessageId = generateSafeId();
+    const confirmationTriggerText = "Finalize scheduling confirmation";
+    console.log(`[UI] Sending trigger message to realEstate agent: '${confirmationTriggerText}'`);
+    
+    // Send the trigger message (not added to visible transcript)
+    sendClientEvent(
+      {
+        type: "conversation.item.create",
+        item: {
+          id: triggerMessageId,
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: confirmationTriggerText }],
+        },
+      },
+      "(UI trigger message for scheduling confirmation)"
+    );
+    
+    // Trigger agent response
+    sendClientEvent({ type: "response.create" }, "(trigger response for scheduling confirmation)");
+  }, [sessionStatus, dcRef, sendClientEvent, stopCurrentResponse, generateSafeId]);
+
+  // Call this function after successful verification to prompt the agent to confirm scheduling
+  useEffect(() => {
+    if (verificationSuccessful) {
+      sendSchedulingConfirmationTrigger();
+    }
+  }, [verificationSuccessful, sendSchedulingConfirmationTrigger]);
 
   return (
     <div
