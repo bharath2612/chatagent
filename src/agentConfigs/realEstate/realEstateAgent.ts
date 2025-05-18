@@ -622,6 +622,8 @@ const realEstateAgent: AgentConfig = {
     detectPropertyInMessage: async ({ message }: { message: string }) => {
         console.log(`[detectPropertyInMessage] Analyzing message: "${message}"`);
         
+        const metadata = realEstateAgent.metadata as AgentMetadata; // Added type assertion
+
         // Skip processing for trigger messages to avoid unnecessary property detection
         if (message.startsWith('{Trigger msg:')) {
             console.log("[detectPropertyInMessage] Skipping property detection for trigger message");
@@ -634,10 +636,13 @@ const realEstateAgent: AgentConfig = {
                 const propertyNameFromTrigger = match[1].trim();
                 console.log(`[detectPropertyInMessage] Property name extracted from trigger: "${propertyNameFromTrigger}"`);
                 
+                // If this property is known, we should update active project
+                const isKnownProperty = (metadata?.project_names || []).includes(propertyNameFromTrigger);
+
                 return {
                     propertyDetected: true,
                     detectedProperty: propertyNameFromTrigger,
-                    shouldUpdateActiveProject: false, // Don't update project for trigger messages
+                    shouldUpdateActiveProject: isKnownProperty, // Update active project if property from trigger is known
                     isTriggerMessage: true
                 };
             }
@@ -648,7 +653,6 @@ const realEstateAgent: AgentConfig = {
             };
         }
         
-        const metadata = realEstateAgent.metadata;
         const project_names = metadata?.project_names || [];
         console.log(`[detectPropertyInMessage] Available properties:`, project_names);
 
@@ -1135,88 +1139,142 @@ const realEstateAgent: AgentConfig = {
         }
     },
 
-    initiateScheduling: async ({ property_id }: { property_id?: string }, transcript: TranscriptItem[] = []) => {
-        const metadata = realEstateAgent.metadata as AgentMetadata; // Added type assertion
+    initiateScheduling: async ({ property_id: P_id_arg }: { property_id?: string }, transcript: TranscriptItem[] = []) => {
+        const metadata = realEstateAgent.metadata as AgentMetadata; 
         const metadataAny = metadata as any;
         
-        // Log available metadata for debugging
+        let actualPropertyIdToSchedule: string | undefined = undefined;
+        let propertyNameForScheduling: string | undefined = undefined;
+
+        console.log(`[initiateScheduling] DEBUG - Input property_id_arg: ${P_id_arg}`);
         console.log("[initiateScheduling] DEBUG - Available metadata:");
-        console.log("  - property_id param:", property_id);
+        console.log("  - P_id_arg param:", P_id_arg);
         console.log("  - active_project_id:", metadataAny?.active_project_id);
         console.log("  - active_project:", metadata?.active_project);
         console.log("  - project_ids:", metadata?.project_ids);
         console.log("  - project_names:", metadataAny?.project_names);
         console.log("  - project_id_map:", metadataAny?.project_id_map);
         
-        let targetPropertyId = property_id;
-        let propertyNameForScheduling: string | undefined = undefined;
-
-        if (targetPropertyId) {
-            // Try to find name for the given targetPropertyId
-            if (metadataAny?.project_id_map) {
-                for (const name in metadataAny.project_id_map) {
-                    if (metadataAny.project_id_map[name] === targetPropertyId) {
-                        propertyNameForScheduling = name;
-                        console.log(`[initiateScheduling] Found property name '${propertyNameForScheduling}' for id '${targetPropertyId}' via project_id_map.`);
+        if (P_id_arg) {
+            // Case 1: P_id_arg is a NAME and exists as a key in project_id_map
+            if (metadataAny?.project_id_map && metadataAny.project_id_map[P_id_arg]) {
+                propertyNameForScheduling = P_id_arg;
+                actualPropertyIdToSchedule = metadataAny.project_id_map[P_id_arg];
+                console.log(`[initiateScheduling] Resolved P_id_arg ('${P_id_arg}') as a NAME (key in project_id_map). ID: '${actualPropertyIdToSchedule}', Name: '${propertyNameForScheduling}'.`);
+            }
+            // Case 2: P_id_arg is an ID and exists as a value in project_id_map
+            else if (metadataAny?.project_id_map) {
+                for (const nameInMap in metadataAny.project_id_map) {
+                    if (metadataAny.project_id_map[nameInMap] === P_id_arg) {
+                        propertyNameForScheduling = nameInMap;
+                        actualPropertyIdToSchedule = P_id_arg;
+                        console.log(`[initiateScheduling] Resolved P_id_arg ('${P_id_arg}') as an ID (value in project_id_map). ID: '${actualPropertyIdToSchedule}', Name: '${propertyNameForScheduling}'.`);
                         break;
                     }
                 }
             }
-            if (!propertyNameForScheduling && metadataAny?.project_ids && metadataAny?.project_names) {
-                const idx = metadataAny.project_ids.indexOf(targetPropertyId);
-                if (idx !== -1 && metadataAny.project_names[idx]) {
-                    propertyNameForScheduling = metadataAny.project_names[idx];
-                    console.log(`[initiateScheduling] Found property name '${propertyNameForScheduling}' for id '${targetPropertyId}' via project_ids/project_names arrays.`);
+
+            // Fallback: If not found via project_id_map, check project_names and project_ids arrays
+            if (!actualPropertyIdToSchedule && metadataAny?.project_names && metadataAny?.project_ids) {
+                // Check if P_id_arg is a name in project_names
+                const nameIndex = metadataAny.project_names.indexOf(P_id_arg);
+                if (nameIndex !== -1 && metadataAny.project_ids[nameIndex]) {
+                    propertyNameForScheduling = P_id_arg;
+                    actualPropertyIdToSchedule = metadataAny.project_ids[nameIndex];
+                    console.log(`[initiateScheduling] Resolved P_id_arg ('${P_id_arg}') as a NAME (in project_names array). ID: '${actualPropertyIdToSchedule}', Name: '${propertyNameForScheduling}'.`);
+                } else {
+                    // Check if P_id_arg is an ID in project_ids
+                    const idIndex = metadataAny.project_ids.indexOf(P_id_arg);
+                    if (idIndex !== -1 && metadataAny.project_names[idIndex]) {
+                        actualPropertyIdToSchedule = P_id_arg;
+                        propertyNameForScheduling = metadataAny.project_names[idIndex];
+                        console.log(`[initiateScheduling] Resolved P_id_arg ('${P_id_arg}') as an ID (in project_ids array). ID: '${actualPropertyIdToSchedule}', Name: '${propertyNameForScheduling}'.`);
+                    }
                 }
             }
+            
+            // If P_id_arg was provided but couldn't be resolved, use it as name and ID will be undefined.
+            // This might happen if project_id_map is not perfectly synced or name is ambiguous.
+            if (!actualPropertyIdToSchedule && P_id_arg && !propertyNameForScheduling) {
+                propertyNameForScheduling = P_id_arg; // Assume P_id_arg is the intended name
+                actualPropertyIdToSchedule = undefined; // ID remains unknown
+                console.warn(`[initiateScheduling] P_id_arg ('${P_id_arg}') was provided but could not be mapped to a known ID. Using it as name. Scheduling agent may need to clarify.`);
+            }
+
         } else if (metadataAny?.active_project_id) {
-            // If no property_id provided, use active project
-            targetPropertyId = metadataAny.active_project_id;
+            // No P_id_arg provided, use active project context
+            actualPropertyIdToSchedule = metadataAny.active_project_id;
             propertyNameForScheduling = metadata?.active_project && metadata?.active_project !== "N/A" ? metadata.active_project : undefined;
-            console.log(`[initiateScheduling] No property_id in args, using active project id '${targetPropertyId}' and name '${propertyNameForScheduling}'.`);
+            
+            // If name is still undefined for the active_project_id, try to find it
+            if (!propertyNameForScheduling && actualPropertyIdToSchedule) {
+                if (metadataAny?.project_id_map) {
+                    for (const nameInMap in metadataAny.project_id_map) {
+                        if (metadataAny.project_id_map[nameInMap] === actualPropertyIdToSchedule) {
+                            propertyNameForScheduling = nameInMap;
+                            break;
+                        }
+                    }
+                }
+                if (!propertyNameForScheduling && metadataAny?.project_ids && metadataAny?.project_names) {
+                    const idIndex = metadataAny.project_ids.indexOf(actualPropertyIdToSchedule);
+                    if (idIndex !== -1) propertyNameForScheduling = metadataAny.project_names[idIndex];
+                }
+            }
+            console.log(`[initiateScheduling] No P_id_arg, using active project. ID: '${actualPropertyIdToSchedule}', Name: '${propertyNameForScheduling}'.`);
+        }
+
+        // Fallback to the first project if no specific context could be determined
+        if (!actualPropertyIdToSchedule && !propertyNameForScheduling && metadata?.project_ids && metadata.project_ids.length > 0) {
+            actualPropertyIdToSchedule = metadata.project_ids[0];
+            if (metadata?.project_names && metadata.project_names.length > 0) {
+                propertyNameForScheduling = metadata.project_names[0];
+            } else if (metadataAny?.project_id_map) {
+                 for (const nameInMap in metadataAny.project_id_map) {
+                    if (metadataAny.project_id_map[nameInMap] === actualPropertyIdToSchedule) {
+                        propertyNameForScheduling = nameInMap;
+                        break;
+                    }
+                }
+            }
+            console.log(`[initiateScheduling] No specific context, falling back to first project. ID: '${actualPropertyIdToSchedule}', Name: '${propertyNameForScheduling}'.`);
         }
         
-        // If targetPropertyId is set (either from args or active_project_id) but name is still not found, try another lookup
-        if (targetPropertyId && !propertyNameForScheduling) {
+        // Final consolidation: If ID is known but name isn't, or vice-versa, try one last time to sync them.
+        if (actualPropertyIdToSchedule && !propertyNameForScheduling) {
             if (metadataAny?.project_id_map) {
-                for (const name in metadataAny.project_id_map) {
-                    if (metadataAny.project_id_map[name] === targetPropertyId) {
-                        propertyNameForScheduling = name;
-                        console.log(`[initiateScheduling] (Fallback lookup) Found property name '${propertyNameForScheduling}' for id '${targetPropertyId}' via project_id_map.`);
+                for (const nameInMap in metadataAny.project_id_map) {
+                    if (metadataAny.project_id_map[nameInMap] === actualPropertyIdToSchedule) {
+                        propertyNameForScheduling = nameInMap;
                         break;
                     }
                 }
             }
             if (!propertyNameForScheduling && metadataAny?.project_ids && metadataAny?.project_names) {
-                const idx = metadataAny.project_ids.indexOf(targetPropertyId);
-                if (idx !== -1 && metadataAny.project_names[idx]) {
-                    propertyNameForScheduling = metadataAny.project_names[idx];
-                    console.log(`[initiateScheduling] (Fallback lookup) Found property name '${propertyNameForScheduling}' for id '${targetPropertyId}' via project_ids/project_names arrays.`);
-                }
+                 const idx = metadataAny.project_ids.indexOf(actualPropertyIdToSchedule);
+                 if (idx !== -1) propertyNameForScheduling = metadataAny.project_names[idx];
             }
-        }
-
-        // If still no specific property ID or name, and we have defaults
-        if (!targetPropertyId && metadata?.project_ids && metadata.project_ids.length > 0) {
-            targetPropertyId = metadata.project_ids[0];
-            console.log(`[initiateScheduling] No specific property_id, falling back to first project_id: ${targetPropertyId}`);
-            if (!propertyNameForScheduling && metadata?.project_names && metadata.project_names.length > 0) {
-                 propertyNameForScheduling = metadata.project_names[0];
-                 console.log(`[initiateScheduling] Corresponding name for fallback ID: ${propertyNameForScheduling}`);
-            }
+            console.log(`[initiateScheduling] (Final Name Lookup) ID: '${actualPropertyIdToSchedule}', Determined Name: '${propertyNameForScheduling || 'unknown'}'.`);
+        } else if (!actualPropertyIdToSchedule && propertyNameForScheduling) {
+             if (metadataAny?.project_id_map && metadataAny.project_id_map[propertyNameForScheduling]) {
+                actualPropertyIdToSchedule = metadataAny.project_id_map[propertyNameForScheduling];
+             } else if (metadataAny?.project_names && metadataAny?.project_ids) {
+                const nameIdx = metadataAny.project_names.indexOf(propertyNameForScheduling);
+                if (nameIdx !== -1) actualPropertyIdToSchedule = metadataAny.project_ids[nameIdx];
+             }
+            console.log(`[initiateScheduling] (Final ID Lookup) Name: '${propertyNameForScheduling}', Determined ID: '${actualPropertyIdToSchedule || 'unknown'}'.`);
         }
         
-        // Final fallback for property name
         propertyNameForScheduling = propertyNameForScheduling || "the selected property";
         
-        console.log(`[initiateScheduling] Transferring to scheduleMeeting agent with property ID: '${targetPropertyId || 'undefined'}', Name: '${propertyNameForScheduling}'`);
+        console.log(`[initiateScheduling] Transferring to scheduleMeeting agent with Property ID: '${actualPropertyIdToSchedule || 'undefined'}', Property Name: '${propertyNameForScheduling}'`);
         
         return {
             destination_agent: "scheduleMeeting",
-            property_id_to_schedule: targetPropertyId, // This might be undefined if no property context
+            property_id_to_schedule: actualPropertyIdToSchedule, 
             property_name: propertyNameForScheduling, 
             silentTransfer: true,
-            message: null // Setting this to null ensures the agent doesn't say anything
+            message: null 
         };
     },
 
