@@ -150,6 +150,7 @@ CRITICAL FLOW RULES:
 - ONLY ask about scheduling a visit if is_verified is true AND has_scheduled is false AND 'trackUserMessage' indicates it.
 - After calling 'initiateScheduling', YOU MUST NOT generate any text response.
 - **IMPORTANT AGENT TRANSFER RULE:** If ANY tool you call (e.g., 'trackUserMessage', 'initiateScheduling') returns a 'destination_agent' field in its result (signaling an agent transfer), YOU MUST NOT generate any text response yourself. Your turn ends silently, and the system will activate the destination agent.
+- After 'completeScheduling' is called by you or another tool AND it results in a 'BOOKING_CONFIRMATION' UI hint (because the booking is done), YOU MUST NOT generate any text response. Your turn ends silently. The UI will display the confirmation.
 
 SCHEDULING INTENT DETECTION:
 - You must carefully analyze user messages for scheduling intent. Examples include:
@@ -417,30 +418,105 @@ const realEstateAgent: AgentConfig = {
                 ui_display_hint: 'CHAT', 
             };
         } else if (metadata?.flow_context === 'from_full_scheduling') { // This context is for when scheduling completes *without* needing separate verification
-            const confirmationMsg = `Great! Your visit to ${metadata.property_name || 'the property'} on ${metadata.selectedDate} at ${metadata.selectedTime} is confirmed, ${metadata.customer_name || 'there'}!`;
-            console.log("[trackUserMessage] Handling 'from_full_scheduling' context:", confirmationMsg);
+            console.log("[trackUserMessage] Handling 'from_full_scheduling' context. Triggering completeScheduling tool.");
             if (realEstateAgent.metadata) {
+                // Clear the flow_context as it's being handled by the function call below.
                 (realEstateAgent.metadata as AgentMetadata).flow_context = undefined; 
-                (realEstateAgent.metadata as AgentMetadata).selectedDate = undefined;
-                (realEstateAgent.metadata as AgentMetadata).selectedTime = undefined;
-                (realEstateAgent.metadata as AgentMetadata).has_scheduled = true;
-                (realEstateAgent.metadata as AgentMetadata).is_verified = true; 
+                // The completeScheduling tool will manage other metadata like has_scheduled, is_verified, selectedDate, selectedTime.
             }
-            return { 
-                message: confirmationMsg, 
-                ui_display_hint: 'CHAT', 
+            return {
+                function_call: {
+                    name: "completeScheduling",
+                    arguments: JSON.stringify({}) // completeScheduling will use existing metadata from the agent
+                }
             };
         } else if (metadata?.flow_context === 'from_direct_auth') {
             const confirmationMsg = `You have been successfully verified, ${metadata.customer_name || 'there'}! How can I help you further?`;
             console.log("[trackUserMessage] Handling 'from_direct_auth' context:", confirmationMsg);
             if (realEstateAgent.metadata) {
-                delete (realEstateAgent.metadata as AgentMetadata).flow_context;
-                // For direct auth, ensure is_verified is set, but has_scheduled state is preserved from before.
-                (realEstateAgent.metadata as AgentMetadata).is_verified = true;
+                realEstateAgent.metadata.has_scheduled = true;
+                realEstateAgent.metadata.is_verified = true;
+                
+                // Clear flow context to prevent re-processing
+                delete (realEstateAgent.metadata as any).flow_context;
+                // Clear scheduling specifics from metadata after confirming
+                (realEstateAgent.metadata as AgentMetadata).selectedDate = undefined;
+                (realEstateAgent.metadata as AgentMetadata).selectedTime = undefined;
             }
-            return { 
-                message: confirmationMsg, 
-                ui_display_hint: 'CHAT' 
+            
+            // Make API calls to notify about the scheduled visit
+            try {
+                // Prepare data for whatsapp-notifier API
+                
+                const notifierData = {
+                    org_id: metadata.org_id || "",
+                    builder_name: metadata.org_name || "Property Developer",
+                    lead_name: metadata.customer_name || "",
+                    phone: metadata.phone_number?.replace("+", "") || ""
+                };
+                
+                console.log("[trackUserMessage] Sending whatsapp notification with data:", notifierData);
+                
+                // First API call - whatsapp-notifier
+                fetch("https://dsakezvdiwmoobugchgu.functions.supabase.co/whatsapp-notifier", {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRzYWtlenZkaXdtb29idWdjaGd1Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTcyNTI5Mjc4NiwiZXhwIjoyMDQwODY4Nzg2fQ.CYPKYDqOuOtU7V9QhZ-U21C1fvuGZ-swUEm8beWc_X0'
+                    },
+                    body: JSON.stringify(notifierData)
+                })
+                .then(response => response.json())
+                .then(data => {
+                    console.log("[trackUserMessage] Whatsapp notifier API response:", data);
+                })
+                .catch(error => {
+                    console.error("[trackUserMessage] Whatsapp notifier API error:", error);
+                });
+                
+                // Prepare data for schedule-visit-whatsapp API
+                const scheduleData = {
+                    customerName: metadata.customer_name || "",
+                    phoneNumber: metadata.phone_number?.startsWith("+") ? metadata.phone_number.substring(1) : metadata.phone_number || "",
+                    propertyId: metadata.property_id_to_schedule || "",
+                    visitDateTime: `${metadata.selectedDate}, ${metadata.selectedTime}`,
+                    chatbotId: metadata.chatbot_id || ""
+                };
+                
+                console.log("[trackUserMessage] Sending schedule visit notification with data:", scheduleData);
+                
+                // Second API call - schedule-visit-whatsapp
+                fetch("https://dsakezvdiwmoobugchgu.supabase.co/functions/v1/schedule-visit-whatsapp", {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRzYWtlenZkaXdtb29idWdjaGd1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3MjUyOTI3ODYsImV4cCI6MjA0MDg2ODc4Nn0.11GJjOlgPf4RocdFjMnWGJpBqFVk1wmbW27OmV0YAzs'
+                    },
+                    body: JSON.stringify(scheduleData)
+                })
+                .then(response => response.json())
+                .then(data => {
+                    console.log("[trackUserMessage] Schedule visit API response:", data);
+                })
+                .catch(error => {
+                    console.error("[trackUserMessage] Schedule visit API error:", error);
+                });
+            } catch (error) {
+                console.error("[trackUserMessage] Error making API calls:", error);
+            }
+            
+            // Return success with confirmation message
+            return {
+                success: true,
+                message: null, // << Agent should not speak; message is on the card
+                ui_display_hint: 'BOOKING_CONFIRMATION', // New UI hint for the booking card
+                booking_details: {
+                    customerName: metadata.customer_name,
+                    propertyName: metadata.property_name || "the property",
+                    date: metadata.selectedDate,
+                    time: metadata.selectedTime,
+                    phoneNumber: metadata.phone_number
+                }
             };
         }
         // END OF PRIORITY FLOW CONTEXT HANDLING
@@ -1226,50 +1302,126 @@ const realEstateAgent: AgentConfig = {
     
     // Mock implementation of completeScheduling for when transitioning from verification
     completeScheduling: async () => {
-      console.log("[realEstateAgent.completeScheduling] Handling post-verification scheduling confirmation");
-      
-      const metadata = realEstateAgent.metadata as any;
-      
-      // Check if we have scheduling data
-      if (metadata?.selectedDate && metadata?.selectedTime && metadata?.customer_name) {
-        // Make sure we have a property name (use defaults if not available)
-        const propertyName = metadata.property_name || "the property";
+        console.log("[realEstateAgent.completeScheduling] Handling post-verification scheduling confirmation");
         
-        // Create a friendly confirmation message
-        const confirmationMsg = `Great news, ${metadata.customer_name}! Your visit to ${propertyName} on ${metadata.selectedDate} at ${metadata.selectedTime} is confirmed! You'll receive all details shortly.`;
-        console.log("[realEstateAgent.completeScheduling] Confirming schedule with: ", confirmationMsg);
+        const metadata = realEstateAgent.metadata as any;
         
-        // Mark as scheduled in agent metadata
-        if (realEstateAgent.metadata) {
-          realEstateAgent.metadata.has_scheduled = true;
-          realEstateAgent.metadata.is_verified = true;
-          
-          // Clear flow context to prevent re-processing
-          delete (realEstateAgent.metadata as any).flow_context;
+        // Check if we have scheduling data
+        if (metadata?.selectedDate && metadata?.selectedTime && metadata?.customer_name) {
+            // Make sure we have a property name (use defaults if not available)
+            const propertyName = metadata.property_name || "the property";
+            
+            // Create a friendly confirmation message
+            const confirmationMsg = `Great news, ${metadata.customer_name}! Your visit to ${propertyName} on ${metadata.selectedDate} at ${metadata.selectedTime} is confirmed! You'll receive all details shortly.`;
+            console.log("[realEstateAgent.completeScheduling] Confirming schedule with: ", confirmationMsg);
+            
+            // Mark as scheduled in agent metadata
+            if (realEstateAgent.metadata) {
+                realEstateAgent.metadata.has_scheduled = true;
+                realEstateAgent.metadata.is_verified = true;
+                
+                // Clear flow context to prevent re-processing
+                delete (realEstateAgent.metadata as any).flow_context;
+                // Clear scheduling specifics from metadata after confirming
+                (realEstateAgent.metadata as AgentMetadata).selectedDate = undefined;
+                (realEstateAgent.metadata as AgentMetadata).selectedTime = undefined;
+            }
+            
+            // Make API calls to notify about the scheduled visit
+            try {
+                // Prepare data for whatsapp-notifier API
+                const notifierData = {
+                    org_id: metadata.org_id || "",
+                    builder_name: metadata.org_name || "Property Developer",
+                    lead_name: metadata.customer_name || "",
+                    phone: metadata.phone_number?.replace("+", "") || ""
+                };
+                
+                console.log("[realEstateAgent.completeScheduling] Sending whatsapp notification with data:", notifierData);
+                
+                // First API call - whatsapp-notifier
+                fetch("https://dsakezvdiwmoobugchgu.functions.supabase.co/whatsapp-notifier", {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRzYWtlenZkaXdtb29idWdjaGd1Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTcyNTI5Mjc4NiwiZXhwIjoyMDQwODY4Nzg2fQ.CYPKYDqOuOtU7V9QhZ-U21C1fvuGZ-swUEm8beWc_X0'
+                    },
+                    body: JSON.stringify(notifierData)
+                })
+                .then(response => response.json())
+                .then(data => {
+                    console.log("[realEstateAgent.completeScheduling] Whatsapp notifier API response:", data);
+                })
+                .catch(error => {
+                    console.error("[realEstateAgent.completeScheduling] Whatsapp notifier API error:", error);
+                });
+                
+                // Prepare data for schedule-visit-whatsapp API
+                const scheduleData = {
+                    customerName: metadata.customer_name || "",
+                    phoneNumber: metadata.phone_number?.startsWith("+") ? metadata.phone_number.substring(1) : metadata.phone_number || "",
+                    propertyId: metadata.property_id_to_schedule || "",
+                    visitDateTime: `${metadata.selectedDate}, ${metadata.selectedTime}`,
+                    chatbotId: metadata.chatbot_id || ""
+                };
+                
+                console.log("[realEstateAgent.completeScheduling] Sending schedule visit notification with data:", scheduleData);
+                
+                // Second API call - schedule-visit-whatsapp
+                fetch("https://dsakezvdiwmoobugchgu.supabase.co/functions/v1/schedule-visit-whatsapp", {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRzYWtlenZkaXdtb29idWdjaGd1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3MjUyOTI3ODYsImV4cCI6MjA0MDg2ODc4Nn0.11GJjOlgPf4RocdFjMnWGJpBqFVk1wmbW27OmV0YAzs'
+                    },
+                    body: JSON.stringify(scheduleData)
+                })
+                .then(response => response.json())
+                .then(data => {
+                    console.log("[realEstateAgent.completeScheduling] Schedule visit API response:", data);
+                })
+                .catch(error => {
+                    console.error("[realEstateAgent.completeScheduling] Schedule visit API error:", error);
+                });
+            } catch (error) {
+                console.error("[realEstateAgent.completeScheduling] Error making API calls:", error);
+            }
+            
+            // Return success with confirmation message
+            return {
+                success: true,
+                message: null, // << Agent should not speak; message is on the card
+                ui_display_hint: 'BOOKING_CONFIRMATION', // New UI hint for the booking card
+                booking_details: {
+                    customerName: metadata.customer_name,
+                    propertyName: propertyName,
+                    date: metadata.selectedDate,
+                    time: metadata.selectedTime,
+                    phoneNumber: metadata.phone_number
+                }
+            };
+        } else {
+            // Handle missing data case
+            console.error("[realEstateAgent.completeScheduling] Missing required scheduling data", {
+                selectedDate: metadata?.selectedDate,
+                selectedTime: metadata?.selectedTime,
+                customer_name: metadata?.customer_name
+            });
+            
+            // Also clear scheduling specifics in the error/missing data case
+            if (realEstateAgent.metadata) {
+                delete (realEstateAgent.metadata as any).flow_context; // Ensure flow_context is cleared
+                (realEstateAgent.metadata as AgentMetadata).selectedDate = undefined;
+                (realEstateAgent.metadata as AgentMetadata).selectedTime = undefined;
+            }
+            // Return a generic message if we can't find the specific details
+            const genericMsg = "Your booking has been confirmed. Thank you!";
+            return {
+                success: true,
+                message: genericMsg,
+                ui_display_hint: 'CHAT'
+            };
         }
-        
-        // Return success with confirmation message
-        return {
-          success: true,
-          message: confirmationMsg,
-          ui_display_hint: 'CHAT'
-        };
-      } else {
-        // Handle missing data case
-        console.error("[realEstateAgent.completeScheduling] Missing required scheduling data", {
-          selectedDate: metadata?.selectedDate,
-          selectedTime: metadata?.selectedTime,
-          customer_name: metadata?.customer_name
-        });
-        
-        // Return a generic message if we can't find the specific details
-        const genericMsg = "Your booking has been confirmed. Thank you!";
-        return {
-          success: true,
-          message: genericMsg,
-          ui_display_hint: 'CHAT'
-        };
-      }
     }
   },
 };

@@ -17,6 +17,7 @@ import Confirmations from "../Appointment/Confirmations";
 import BookingConfirmation from "../Appointment/BookingConfirmation";
 import VerificationForm from "../Appointment/VerificationForm"; // Corrected path
 import OTPInput from "../Appointment/otp"; // Import OTP component
+import BookingDetailsCard from "../Appointment/BookingDetailsCard";
 
 // Agent Logic Imports
 import { 
@@ -82,11 +83,21 @@ type ActiveDisplayMode =
   | 'SCHEDULING_FORM' // For TimePick
   | 'VERIFICATION_FORM' // For VerificationForm
   | 'OTP_FORM' // For OTPInput
-  | 'VERIFICATION_SUCCESS'; // For showing verification success before returning to CHAT
+  | 'VERIFICATION_SUCCESS' // For showing verification success before returning to CHAT
+  | 'BOOKING_CONFIRMATION'; // For showing booking details card
 
 interface PropertyGalleryData {
   propertyName: string
   images: PropertyImage[]
+}
+
+// Add new interface for booking details
+interface BookingDetails {
+  customerName: string;
+  propertyName: string;
+  date: string;
+  time: string;
+  phoneNumber?: string;
 }
 
 // --- Agent Component ---
@@ -175,6 +186,9 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
 
   // Initialize start time when the connection is established
   const [startTime, setStartTime] = useState<string | null>(null);
+
+  // Add state for booking details
+  const [bookingDetails, setBookingDetails] = useState<BookingDetails | null>(null);
 
   // Helper to generate safe IDs (32 chars max)
   const generateSafeId = () => uuidv4().replace(/-/g, '').slice(0, 32);
@@ -283,6 +297,7 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       setPropertyListData,
       setSelectedPropertyDetails,
       setPropertyGalleryData,
+      setBookingDetails, // Add this new setter
   });
 
   // --- NEW PROPERTY HANDLERS --- 
@@ -885,6 +900,34 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
                 }
             }
         }
+
+        // Add handling for completeScheduling function
+        if (functionName === "completeScheduling") {
+            console.log("[handleServerEvent] Detected function_call_output for completeScheduling.");
+            const outputString = functionOutputItem.output;
+            if (outputString) {
+                try {
+                    const outputData = JSON.parse(outputString);
+                    if (outputData.booking_details) {
+                        console.log("[handleServerEvent] Setting booking details:", outputData.booking_details);
+                        setBookingDetails(outputData.booking_details);
+                        
+                        if (outputData.ui_display_hint === 'BOOKING_CONFIRMATION') {
+                            console.log("[handleServerEvent] Setting display mode to BOOKING_CONFIRMATION");
+                            setActiveDisplayMode('BOOKING_CONFIRMATION');
+                            
+                            // Add an explicit confirmation message
+                            if (outputData.message) {
+                                addTranscriptMessage(generateSafeId(), 'assistant', outputData.message);
+                            }
+                        }
+                        propertiesHandledLocally = true; // Mark as handled
+                    }
+                } catch (e) {
+                    console.error("[handleServerEvent] Error parsing completeScheduling output:", e);
+                }
+            }
+        }
     }
     
     // We've removed the problematic response.done handler
@@ -974,7 +1017,8 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
       selectedTime, // Add selectedTime to dependencies
       selectedDay, // Add selectedDay to dependencies
       prevAgentNameRef,
-      transcriptItems
+      transcriptItems,
+      setBookingDetails, // Add this new dependency
     ]);
 
   // Ref part remains the same
@@ -2035,6 +2079,23 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
     }
   }, [sessionStatus, startTime]);
 
+  // Effect to handle the display duration of BOOKING_CONFIRMATION
+  // useEffect(() => {
+  //   let timer: NodeJS.Timeout;
+  //   if (activeDisplayMode === 'BOOKING_CONFIRMATION') {
+  //     console.log("[UI Effect] BOOKING_CONFIRMATION active. Setting 5s timer to switch to CHAT.");
+  //     timer = setTimeout(() => {
+  //       console.log("[UI Effect] Timer expired for BOOKING_CONFIRMATION. Switching to CHAT mode.");
+  //       setActiveDisplayMode('CHAT');
+  //       // Optionally, send a trigger message to the agent here if a specific follow-up is desired
+  //       // For example: sendTriggerMessage("{Trigger msg: Post-confirmation follow-up}");
+  //     }, 5000); // 5 seconds
+  //   }
+  //   return () => {
+  //     clearTimeout(timer); // Cleanup timer if component unmounts or mode changes
+  //   };
+  // }, [activeDisplayMode, setActiveDisplayMode /*, sendTriggerMessage */]); // Add sendTriggerMessage if used
+
   // Add a helper function to send a trigger message for scheduling confirmation
   const sendSchedulingConfirmationTrigger = useCallback(() => {
     if (sessionStatus !== 'CONNECTED' || !dcRef.current) {
@@ -2329,6 +2390,18 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
             )}
             
             <div ref={transcriptEndRef} />
+
+            {activeDisplayMode === 'BOOKING_CONFIRMATION' && bookingDetails && (
+              <div className="relative w-full flex items-center justify-center">
+                <BookingDetailsCard
+                  customerName={bookingDetails.customerName}
+                  propertyName={bookingDetails.propertyName}
+                  date={bookingDetails.date}
+                  time={bookingDetails.time}
+                  phoneNumber={bookingDetails.phoneNumber}
+                />
+              </div>
+            )}
           </div>
 
           {/* User Transcription Overlay (Only in CHAT mode) */}
