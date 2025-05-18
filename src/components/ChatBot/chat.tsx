@@ -309,12 +309,8 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
     
     // Send a trigger message for the agent to explain this property
     setTimeout(() => {
-      sendTriggerMessage(`{Trigger msg: Explain details of this ${property.name}}`);
+      sendTriggerMessage(`{Trigger msg: Explain details of this ${property.name}} in brief and then ask if they want to schedule a visit to this property`);
       
-      // Schedule the follow-up trigger to ask about scheduling
-      setTimeout(() => {
-        sendTriggerMessage(`{Trigger msg: Ask user whether they want to schedule a visit to this property}`);
-      }, 9000); // 3 seconds delay before asking about scheduling
     }, 500); // Small delay to ensure UI has updated first
   };
 

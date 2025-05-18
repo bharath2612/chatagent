@@ -240,7 +240,7 @@ export function useHandleServerEvent({
             setTimeout(() => {
               console.log(`[handleFunctionCall] Transitioning from BOOKING_CONFIRMATION to CHAT`);
               setActiveDisplayMode('CHAT');
-            }, 8000); // 8 seconds delay to give more time to see the details
+            }, 10000); // 8 seconds delay to give more time to see the details
           }
           // If the mode is CHAT, data was already cleared.
         } else if (fnResult && !fnResult.destination_agent) {

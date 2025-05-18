@@ -150,7 +150,7 @@ CRITICAL FLOW RULES:
 - ONLY ask about scheduling a visit if is_verified is true AND has_scheduled is false AND 'trackUserMessage' indicates it.
 - After calling 'initiateScheduling', YOU MUST NOT generate any text response.
 - **IMPORTANT AGENT TRANSFER RULE:** If ANY tool you call (e.g., 'trackUserMessage', 'initiateScheduling') returns a 'destination_agent' field in its result (signaling an agent transfer), YOU MUST NOT generate any text response yourself. Your turn ends silently, and the system will activate the destination agent.
-- After 'completeScheduling' is called by you or another tool AND it results in a 'BOOKING_CONFIRMATION' UI hint (because the booking is done), YOU MUST NOT generate any text response. Your turn ends silently. The UI will display the confirmation.
+- After 'completeScheduling' is called by you or another tool AND it results in a 'BOOKING_CONFIRMATION' UI hint (because the booking is done), YOU MUST SAY THAT THE BOOKING IS CONFIRMED. The UI will display the confirmation.THE UI HINT IS BOOKING_CONFIRMATION.
 
 SCHEDULING INTENT DETECTION:
 - You must carefully analyze user messages for scheduling intent. Examples include:
