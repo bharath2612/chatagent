@@ -150,6 +150,7 @@ CRITICAL FLOW RULES:
 - ONLY ask about scheduling a visit if is_verified is true AND has_scheduled is false AND 'trackUserMessage' indicates it.
 - After calling 'initiateScheduling', YOU MUST NOT generate any text response.
 - **IMPORTANT AGENT TRANSFER RULE:** If ANY tool you call (e.g., 'trackUserMessage', 'initiateScheduling') returns a 'destination_agent' field in its result (signaling an agent transfer), YOU MUST NOT generate any text response yourself. Your turn ends silently, and the system will activate the destination agent.
+- After 'completeScheduling' is called by you or another tool AND it results in a 'BOOKING_CONFIRMATION' UI hint (because the booking is done), YOU MUST SAY THAT THE BOOKING IS CONFIRMED. The UI will display the confirmation.THE UI HINT IS BOOKING_CONFIRMATION.
 
 SCHEDULING INTENT DETECTION:
 - You must carefully analyze user messages for scheduling intent. Examples include:
@@ -369,12 +370,25 @@ const realEstateAgent: AgentConfig = {
   toolLogic: {
     // --- Internal Tools --- 
     trackUserMessage: async ({ message }: { message: string }) => {
-        const metadata = realEstateAgent.metadata as AgentMetadata; // Use the extended AgentMetadata
+        const metadata = realEstateAgent.metadata as AgentMetadata;
+        
+        // Special handling for scheduling confirmation trigger
+        if (message === "Finalize scheduling confirmation") {
+            console.log("[trackUserMessage] Handling scheduling confirmation trigger");
+            
+            // Instead of returning a message directly, trigger completeScheduling
+            // This will ensure proper function call handling in the response
+            return {
+                function_call: {
+                    name: "completeScheduling",
+                    arguments: JSON.stringify({})
+                }
+            };
+        }
         
         // Check for special trigger messages
         if (message.startsWith('{Trigger msg:')) {
             console.log("[trackUserMessage] Detected special trigger message:", message);
-            // Don't process trigger messages further - let the agent handle them directly
             return { 
                 success: true, 
                 is_trigger_message: true,
@@ -404,30 +418,105 @@ const realEstateAgent: AgentConfig = {
                 ui_display_hint: 'CHAT', 
             };
         } else if (metadata?.flow_context === 'from_full_scheduling') { // This context is for when scheduling completes *without* needing separate verification
-            const confirmationMsg = `Great! Your visit to ${metadata.property_name || 'the property'} on ${metadata.selectedDate} at ${metadata.selectedTime} is confirmed, ${metadata.customer_name || 'there'}!`;
-            console.log("[trackUserMessage] Handling 'from_full_scheduling' context:", confirmationMsg);
+            console.log("[trackUserMessage] Handling 'from_full_scheduling' context. Triggering completeScheduling tool.");
             if (realEstateAgent.metadata) {
+                // Clear the flow_context as it's being handled by the function call below.
                 (realEstateAgent.metadata as AgentMetadata).flow_context = undefined; 
-                (realEstateAgent.metadata as AgentMetadata).selectedDate = undefined;
-                (realEstateAgent.metadata as AgentMetadata).selectedTime = undefined;
-                (realEstateAgent.metadata as AgentMetadata).has_scheduled = true;
-                (realEstateAgent.metadata as AgentMetadata).is_verified = true; 
+                // The completeScheduling tool will manage other metadata like has_scheduled, is_verified, selectedDate, selectedTime.
             }
-            return { 
-                message: confirmationMsg, 
-                ui_display_hint: 'CHAT', 
+            return {
+                function_call: {
+                    name: "completeScheduling",
+                    arguments: JSON.stringify({}) // completeScheduling will use existing metadata from the agent
+                }
             };
         } else if (metadata?.flow_context === 'from_direct_auth') {
             const confirmationMsg = `You have been successfully verified, ${metadata.customer_name || 'there'}! How can I help you further?`;
             console.log("[trackUserMessage] Handling 'from_direct_auth' context:", confirmationMsg);
             if (realEstateAgent.metadata) {
-                delete (realEstateAgent.metadata as AgentMetadata).flow_context;
-                // For direct auth, ensure is_verified is set, but has_scheduled state is preserved from before.
-                (realEstateAgent.metadata as AgentMetadata).is_verified = true;
+                realEstateAgent.metadata.has_scheduled = true;
+                realEstateAgent.metadata.is_verified = true;
+                
+                // Clear flow context to prevent re-processing
+                delete (realEstateAgent.metadata as any).flow_context;
+                // Clear scheduling specifics from metadata after confirming
+                (realEstateAgent.metadata as AgentMetadata).selectedDate = undefined;
+                (realEstateAgent.metadata as AgentMetadata).selectedTime = undefined;
             }
-            return { 
-                message: confirmationMsg, 
-                ui_display_hint: 'CHAT' 
+            
+            // Make API calls to notify about the scheduled visit
+            try {
+                // Prepare data for whatsapp-notifier API
+                
+                const notifierData = {
+                    org_id: metadata.org_id || "",
+                    builder_name: metadata.org_name || "Property Developer",
+                    lead_name: metadata.customer_name || "",
+                    phone: metadata.phone_number?.replace("+", "") || ""
+                };
+                
+                console.log("[trackUserMessage] Sending whatsapp notification with data:", notifierData);
+                
+                // First API call - whatsapp-notifier
+                fetch("https://dsakezvdiwmoobugchgu.functions.supabase.co/whatsapp-notifier", {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRzYWtlenZkaXdtb29idWdjaGd1Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTcyNTI5Mjc4NiwiZXhwIjoyMDQwODY4Nzg2fQ.CYPKYDqOuOtU7V9QhZ-U21C1fvuGZ-swUEm8beWc_X0'
+                    },
+                    body: JSON.stringify(notifierData)
+                })
+                .then(response => response.json())
+                .then(data => {
+                    console.log("[trackUserMessage] Whatsapp notifier API response:", data);
+                })
+                .catch(error => {
+                    console.error("[trackUserMessage] Whatsapp notifier API error:", error);
+                });
+                
+                // Prepare data for schedule-visit-whatsapp API
+                const scheduleData = {
+                    customerName: metadata.customer_name || "",
+                    phoneNumber: metadata.phone_number?.startsWith("+") ? metadata.phone_number.substring(1) : metadata.phone_number || "",
+                    propertyId: metadata.property_id_to_schedule || "",
+                    visitDateTime: `${metadata.selectedDate}, ${metadata.selectedTime}`,
+                    chatbotId: metadata.chatbot_id || ""
+                };
+                
+                console.log("[trackUserMessage] Sending schedule visit notification with data:", scheduleData);
+                
+                // Second API call - schedule-visit-whatsapp
+                fetch("https://dsakezvdiwmoobugchgu.supabase.co/functions/v1/schedule-visit-whatsapp", {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRzYWtlenZkaXdtb29idWdjaGd1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3MjUyOTI3ODYsImV4cCI6MjA0MDg2ODc4Nn0.11GJjOlgPf4RocdFjMnWGJpBqFVk1wmbW27OmV0YAzs'
+                    },
+                    body: JSON.stringify(scheduleData)
+                })
+                .then(response => response.json())
+                .then(data => {
+                    console.log("[trackUserMessage] Schedule visit API response:", data);
+                })
+                .catch(error => {
+                    console.error("[trackUserMessage] Schedule visit API error:", error);
+                });
+            } catch (error) {
+                console.error("[trackUserMessage] Error making API calls:", error);
+            }
+            
+            // Return success with confirmation message
+            return {
+                success: true,
+                message: null, // << Agent should not speak; message is on the card
+                ui_display_hint: 'BOOKING_CONFIRMATION', // New UI hint for the booking card
+                booking_details: {
+                    customerName: metadata.customer_name,
+                    propertyName: metadata.property_name || "the property",
+                    date: metadata.selectedDate,
+                    time: metadata.selectedTime,
+                    phoneNumber: metadata.phone_number
+                }
             };
         }
         // END OF PRIORITY FLOW CONTEXT HANDLING
@@ -533,6 +622,8 @@ const realEstateAgent: AgentConfig = {
     detectPropertyInMessage: async ({ message }: { message: string }) => {
         console.log(`[detectPropertyInMessage] Analyzing message: "${message}"`);
         
+        const metadata = realEstateAgent.metadata as AgentMetadata; // Added type assertion
+
         // Skip processing for trigger messages to avoid unnecessary property detection
         if (message.startsWith('{Trigger msg:')) {
             console.log("[detectPropertyInMessage] Skipping property detection for trigger message");
@@ -545,10 +636,13 @@ const realEstateAgent: AgentConfig = {
                 const propertyNameFromTrigger = match[1].trim();
                 console.log(`[detectPropertyInMessage] Property name extracted from trigger: "${propertyNameFromTrigger}"`);
                 
+                // If this property is known, we should update active project
+                const isKnownProperty = (metadata?.project_names || []).includes(propertyNameFromTrigger);
+
                 return {
                     propertyDetected: true,
                     detectedProperty: propertyNameFromTrigger,
-                    shouldUpdateActiveProject: false, // Don't update project for trigger messages
+                    shouldUpdateActiveProject: isKnownProperty, // Update active project if property from trigger is known
                     isTriggerMessage: true
                 };
             }
@@ -559,7 +653,6 @@ const realEstateAgent: AgentConfig = {
             };
         }
         
-        const metadata = realEstateAgent.metadata;
         const project_names = metadata?.project_names || [];
         console.log(`[detectPropertyInMessage] Available properties:`, project_names);
 
@@ -1046,42 +1139,142 @@ const realEstateAgent: AgentConfig = {
         }
     },
 
-    initiateScheduling: async ({ property_id }: { property_id?: string }, transcript: TranscriptItem[] = []) => {
-        const metadata = realEstateAgent.metadata as AgentMetadata; // Added type assertion
+    initiateScheduling: async ({ property_id: P_id_arg }: { property_id?: string }, transcript: TranscriptItem[] = []) => {
+        const metadata = realEstateAgent.metadata as AgentMetadata; 
         const metadataAny = metadata as any;
         
-        // Log available metadata for debugging
+        let actualPropertyIdToSchedule: string | undefined = undefined;
+        let propertyNameForScheduling: string | undefined = undefined;
+
+        console.log(`[initiateScheduling] DEBUG - Input property_id_arg: ${P_id_arg}`);
         console.log("[initiateScheduling] DEBUG - Available metadata:");
-        console.log("  - property_id param:", property_id);
+        console.log("  - P_id_arg param:", P_id_arg);
         console.log("  - active_project_id:", metadataAny?.active_project_id);
         console.log("  - active_project:", metadata?.active_project);
         console.log("  - project_ids:", metadata?.project_ids);
+        console.log("  - project_names:", metadataAny?.project_names);
+        console.log("  - project_id_map:", metadataAny?.project_id_map);
         
-        // Try multiple fallbacks for property ID
-        let targetPropertyId = property_id;
-        
-        if (!targetPropertyId && metadataAny?.active_project_id) {
-            console.log("[initiateScheduling] Using active_project_id:", metadataAny.active_project_id);
-            targetPropertyId = metadataAny.active_project_id;
+        if (P_id_arg) {
+            // Case 1: P_id_arg is a NAME and exists as a key in project_id_map
+            if (metadataAny?.project_id_map && metadataAny.project_id_map[P_id_arg]) {
+                propertyNameForScheduling = P_id_arg;
+                actualPropertyIdToSchedule = metadataAny.project_id_map[P_id_arg];
+                console.log(`[initiateScheduling] Resolved P_id_arg ('${P_id_arg}') as a NAME (key in project_id_map). ID: '${actualPropertyIdToSchedule}', Name: '${propertyNameForScheduling}'.`);
+            }
+            // Case 2: P_id_arg is an ID and exists as a value in project_id_map
+            else if (metadataAny?.project_id_map) {
+                for (const nameInMap in metadataAny.project_id_map) {
+                    if (metadataAny.project_id_map[nameInMap] === P_id_arg) {
+                        propertyNameForScheduling = nameInMap;
+                        actualPropertyIdToSchedule = P_id_arg;
+                        console.log(`[initiateScheduling] Resolved P_id_arg ('${P_id_arg}') as an ID (value in project_id_map). ID: '${actualPropertyIdToSchedule}', Name: '${propertyNameForScheduling}'.`);
+                        break;
+                    }
+                }
+            }
+
+            // Fallback: If not found via project_id_map, check project_names and project_ids arrays
+            if (!actualPropertyIdToSchedule && metadataAny?.project_names && metadataAny?.project_ids) {
+                // Check if P_id_arg is a name in project_names
+                const nameIndex = metadataAny.project_names.indexOf(P_id_arg);
+                if (nameIndex !== -1 && metadataAny.project_ids[nameIndex]) {
+                    propertyNameForScheduling = P_id_arg;
+                    actualPropertyIdToSchedule = metadataAny.project_ids[nameIndex];
+                    console.log(`[initiateScheduling] Resolved P_id_arg ('${P_id_arg}') as a NAME (in project_names array). ID: '${actualPropertyIdToSchedule}', Name: '${propertyNameForScheduling}'.`);
+                } else {
+                    // Check if P_id_arg is an ID in project_ids
+                    const idIndex = metadataAny.project_ids.indexOf(P_id_arg);
+                    if (idIndex !== -1 && metadataAny.project_names[idIndex]) {
+                        actualPropertyIdToSchedule = P_id_arg;
+                        propertyNameForScheduling = metadataAny.project_names[idIndex];
+                        console.log(`[initiateScheduling] Resolved P_id_arg ('${P_id_arg}') as an ID (in project_ids array). ID: '${actualPropertyIdToSchedule}', Name: '${propertyNameForScheduling}'.`);
+                    }
+                }
+            }
+            
+            // If P_id_arg was provided but couldn't be resolved, use it as name and ID will be undefined.
+            // This might happen if project_id_map is not perfectly synced or name is ambiguous.
+            if (!actualPropertyIdToSchedule && P_id_arg && !propertyNameForScheduling) {
+                propertyNameForScheduling = P_id_arg; // Assume P_id_arg is the intended name
+                actualPropertyIdToSchedule = undefined; // ID remains unknown
+                console.warn(`[initiateScheduling] P_id_arg ('${P_id_arg}') was provided but could not be mapped to a known ID. Using it as name. Scheduling agent may need to clarify.`);
+            }
+
+        } else if (metadataAny?.active_project_id) {
+            // No P_id_arg provided, use active project context
+            actualPropertyIdToSchedule = metadataAny.active_project_id;
+            propertyNameForScheduling = metadata?.active_project && metadata?.active_project !== "N/A" ? metadata.active_project : undefined;
+            
+            // If name is still undefined for the active_project_id, try to find it
+            if (!propertyNameForScheduling && actualPropertyIdToSchedule) {
+                if (metadataAny?.project_id_map) {
+                    for (const nameInMap in metadataAny.project_id_map) {
+                        if (metadataAny.project_id_map[nameInMap] === actualPropertyIdToSchedule) {
+                            propertyNameForScheduling = nameInMap;
+                            break;
+                        }
+                    }
+                }
+                if (!propertyNameForScheduling && metadataAny?.project_ids && metadataAny?.project_names) {
+                    const idIndex = metadataAny.project_ids.indexOf(actualPropertyIdToSchedule);
+                    if (idIndex !== -1) propertyNameForScheduling = metadataAny.project_names[idIndex];
+                }
+            }
+            console.log(`[initiateScheduling] No P_id_arg, using active project. ID: '${actualPropertyIdToSchedule}', Name: '${propertyNameForScheduling}'.`);
+        }
+
+        // Fallback to the first project if no specific context could be determined
+        if (!actualPropertyIdToSchedule && !propertyNameForScheduling && metadata?.project_ids && metadata.project_ids.length > 0) {
+            actualPropertyIdToSchedule = metadata.project_ids[0];
+            if (metadata?.project_names && metadata.project_names.length > 0) {
+                propertyNameForScheduling = metadata.project_names[0];
+            } else if (metadataAny?.project_id_map) {
+                 for (const nameInMap in metadataAny.project_id_map) {
+                    if (metadataAny.project_id_map[nameInMap] === actualPropertyIdToSchedule) {
+                        propertyNameForScheduling = nameInMap;
+                        break;
+                    }
+                }
+            }
+            console.log(`[initiateScheduling] No specific context, falling back to first project. ID: '${actualPropertyIdToSchedule}', Name: '${propertyNameForScheduling}'.`);
         }
         
-        if (!targetPropertyId && metadata?.project_ids && metadata.project_ids.length > 0) {
-            console.log("[initiateScheduling] Falling back to first project_id:", metadata.project_ids[0]);
-            targetPropertyId = metadata.project_ids[0];
+        // Final consolidation: If ID is known but name isn't, or vice-versa, try one last time to sync them.
+        if (actualPropertyIdToSchedule && !propertyNameForScheduling) {
+            if (metadataAny?.project_id_map) {
+                for (const nameInMap in metadataAny.project_id_map) {
+                    if (metadataAny.project_id_map[nameInMap] === actualPropertyIdToSchedule) {
+                        propertyNameForScheduling = nameInMap;
+                        break;
+                    }
+                }
+            }
+            if (!propertyNameForScheduling && metadataAny?.project_ids && metadataAny?.project_names) {
+                 const idx = metadataAny.project_ids.indexOf(actualPropertyIdToSchedule);
+                 if (idx !== -1) propertyNameForScheduling = metadataAny.project_names[idx];
+            }
+            console.log(`[initiateScheduling] (Final Name Lookup) ID: '${actualPropertyIdToSchedule}', Determined Name: '${propertyNameForScheduling || 'unknown'}'.`);
+        } else if (!actualPropertyIdToSchedule && propertyNameForScheduling) {
+             if (metadataAny?.project_id_map && metadataAny.project_id_map[propertyNameForScheduling]) {
+                actualPropertyIdToSchedule = metadataAny.project_id_map[propertyNameForScheduling];
+             } else if (metadataAny?.project_names && metadataAny?.project_ids) {
+                const nameIdx = metadataAny.project_names.indexOf(propertyNameForScheduling);
+                if (nameIdx !== -1) actualPropertyIdToSchedule = metadataAny.project_ids[nameIdx];
+             }
+            console.log(`[initiateScheduling] (Final ID Lookup) Name: '${propertyNameForScheduling}', Determined ID: '${actualPropertyIdToSchedule || 'unknown'}'.`);
         }
         
-        // If we still don't have a property ID, proceed anyway and let the scheduling agent handle it
-        if (!targetPropertyId) {
-            console.log("[initiateScheduling] No property ID available, proceeding with transfer anyway");
-            } else {
-            console.log(`[initiateScheduling] Transferring to scheduleMeeting agent for property ID: ${targetPropertyId}`);
-        }
+        propertyNameForScheduling = propertyNameForScheduling || "the selected property";
+        
+        console.log(`[initiateScheduling] Transferring to scheduleMeeting agent with Property ID: '${actualPropertyIdToSchedule || 'undefined'}', Property Name: '${propertyNameForScheduling}'`);
         
         return {
             destination_agent: "scheduleMeeting",
-            property_id_to_schedule: targetPropertyId, // This might be undefined, but that's OK
+            property_id_to_schedule: actualPropertyIdToSchedule, 
+            property_name: propertyNameForScheduling, 
             silentTransfer: true,
-            message: null // Setting this to null ensures the agent doesn't say anything
+            message: null 
         };
     },
 
@@ -1167,34 +1360,126 @@ const realEstateAgent: AgentConfig = {
     
     // Mock implementation of completeScheduling for when transitioning from verification
     completeScheduling: async () => {
-      console.log("[realEstateAgent.completeScheduling] Handling post-verification scheduling confirmation");
-      
-      const metadata = realEstateAgent.metadata as any;
-      
-      // Check if we have scheduling data
-      if (metadata?.selectedDate && metadata?.selectedTime && metadata?.property_name) {
-        const confirmationMsg = `Great news, ${metadata.customer_name || 'there'}! Your visit to ${metadata.property_name || 'the property'} on ${metadata.selectedDate} at ${metadata.selectedTime} is confirmed! You'll receive all details shortly.`;
-        console.log("[realEstateAgent.completeScheduling] Confirming schedule with: ", confirmationMsg);
+        console.log("[realEstateAgent.completeScheduling] Handling post-verification scheduling confirmation");
         
-        // Mark as scheduled in agent metadata
-        if (realEstateAgent.metadata) {
-          (realEstateAgent.metadata as any).has_scheduled = true;
-          (realEstateAgent.metadata as any).is_verified = true;
+        const metadata = realEstateAgent.metadata as any;
+        
+        // Check if we have scheduling data
+        if (metadata?.selectedDate && metadata?.selectedTime && metadata?.customer_name) {
+            // Make sure we have a property name (use defaults if not available)
+            const propertyName = metadata.property_name || "the property";
+            
+            // Create a friendly confirmation message
+            const confirmationMsg = `Great news, ${metadata.customer_name}! Your visit to ${propertyName} on ${metadata.selectedDate} at ${metadata.selectedTime} is confirmed! You'll receive all details shortly.`;
+            console.log("[realEstateAgent.completeScheduling] Confirming schedule with: ", confirmationMsg);
+            
+            // Mark as scheduled in agent metadata
+            if (realEstateAgent.metadata) {
+                realEstateAgent.metadata.has_scheduled = true;
+                realEstateAgent.metadata.is_verified = true;
+                
+                // Clear flow context to prevent re-processing
+                delete (realEstateAgent.metadata as any).flow_context;
+                // Clear scheduling specifics from metadata after confirming
+                (realEstateAgent.metadata as AgentMetadata).selectedDate = undefined;
+                (realEstateAgent.metadata as AgentMetadata).selectedTime = undefined;
+            }
+            
+            // Make API calls to notify about the scheduled visit
+            try {
+                // Prepare data for whatsapp-notifier API
+                const notifierData = {
+                    org_id: metadata.org_id || "",
+                    builder_name: metadata.org_name || "Property Developer",
+                    lead_name: metadata.customer_name || "",
+                    phone: metadata.phone_number?.replace("+", "") || ""
+                };
+                
+                console.log("[realEstateAgent.completeScheduling] Sending whatsapp notification with data:", notifierData);
+                
+                // First API call - whatsapp-notifier
+                fetch("https://dsakezvdiwmoobugchgu.functions.supabase.co/whatsapp-notifier", {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRzYWtlenZkaXdtb29idWdjaGd1Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTcyNTI5Mjc4NiwiZXhwIjoyMDQwODY4Nzg2fQ.CYPKYDqOuOtU7V9QhZ-U21C1fvuGZ-swUEm8beWc_X0'
+                    },
+                    body: JSON.stringify(notifierData)
+                })
+                .then(response => response.json())
+                .then(data => {
+                    console.log("[realEstateAgent.completeScheduling] Whatsapp notifier API response:", data);
+                })
+                .catch(error => {
+                    console.error("[realEstateAgent.completeScheduling] Whatsapp notifier API error:", error);
+                });
+                
+                // Prepare data for schedule-visit-whatsapp API
+                const scheduleData = {
+                    customerName: metadata.customer_name || "",
+                    phoneNumber: metadata.phone_number?.startsWith("+") ? metadata.phone_number.substring(1) : metadata.phone_number || "",
+                    propertyId: metadata.property_id_to_schedule || "",
+                    visitDateTime: `${metadata.selectedDate}, ${metadata.selectedTime}`,
+                    chatbotId: metadata.chatbot_id || ""
+                };
+                
+                console.log("[realEstateAgent.completeScheduling] Sending schedule visit notification with data:", scheduleData);
+                
+                // Second API call - schedule-visit-whatsapp
+                fetch("https://dsakezvdiwmoobugchgu.supabase.co/functions/v1/schedule-visit-whatsapp", {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRzYWtlenZkaXdtb29idWdjaGd1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3MjUyOTI3ODYsImV4cCI6MjA0MDg2ODc4Nn0.11GJjOlgPf4RocdFjMnWGJpBqFVk1wmbW27OmV0YAzs'
+                    },
+                    body: JSON.stringify(scheduleData)
+                })
+                .then(response => response.json())
+                .then(data => {
+                    console.log("[realEstateAgent.completeScheduling] Schedule visit API response:", data);
+                })
+                .catch(error => {
+                    console.error("[realEstateAgent.completeScheduling] Schedule visit API error:", error);
+                });
+            } catch (error) {
+                console.error("[realEstateAgent.completeScheduling] Error making API calls:", error);
+            }
+            
+            // Return success with confirmation message
+            return {
+                success: true,
+                message: null, // << Agent should not speak; message is on the card
+                ui_display_hint: 'BOOKING_CONFIRMATION', // New UI hint for the booking card
+                booking_details: {
+                    customerName: metadata.customer_name,
+                    propertyName: propertyName,
+                    date: metadata.selectedDate,
+                    time: metadata.selectedTime,
+                    phoneNumber: metadata.phone_number
+                }
+            };
+        } else {
+            // Handle missing data case
+            console.error("[realEstateAgent.completeScheduling] Missing required scheduling data", {
+                selectedDate: metadata?.selectedDate,
+                selectedTime: metadata?.selectedTime,
+                customer_name: metadata?.customer_name
+            });
+            
+            // Also clear scheduling specifics in the error/missing data case
+            if (realEstateAgent.metadata) {
+                delete (realEstateAgent.metadata as any).flow_context; // Ensure flow_context is cleared
+                (realEstateAgent.metadata as AgentMetadata).selectedDate = undefined;
+                (realEstateAgent.metadata as AgentMetadata).selectedTime = undefined;
+            }
+            // Return a generic message if we can't find the specific details
+            const genericMsg = "Your booking has been confirmed. Thank you!";
+            return {
+                success: true,
+                message: genericMsg,
+                ui_display_hint: 'CHAT'
+            };
         }
-        
-        return {
-          success: true,
-          message: confirmationMsg,
-          ui_display_hint: 'CHAT'
-        };
-      }
-      
-      // If no scheduling data, just return a generic confirmation
-      return {
-        success: true,
-        message: "Verification complete! How can I help you?",
-        ui_display_hint: 'CHAT'
-      };
     }
   },
 };

@@ -1,7 +1,7 @@
 "use client";
 
 import { ServerEvent, SessionStatus, AgentConfig, TranscriptItem, AgentMetadata } from "@/types/types"; // Adjusted import path, added TranscriptItem and AgentMetadata
-import { useRef, useEffect, useState } from "react";
+import { useRef, useEffect, useState, Dispatch, SetStateAction } from "react";
 import { v4 as uuidv4 } from "uuid";
 
 // Helper function to create safe IDs (must be 32 chars or less)
@@ -34,7 +34,8 @@ type ActiveDisplayMode =
   | 'SCHEDULING_FORM'
   | 'VERIFICATION_FORM'
   | 'OTP_FORM'
-  | 'VERIFICATION_SUCCESS';
+  | 'VERIFICATION_SUCCESS'
+  | 'BOOKING_CONFIRMATION';
 
 interface PropertyGalleryData {
   propertyName: string;
@@ -43,27 +44,28 @@ interface PropertyGalleryData {
 
 export interface UseHandleServerEventParams {
   // Required state setters and config
-  setSessionStatus: (status: SessionStatus) => void;
+  setSessionStatus: Dispatch<SetStateAction<SessionStatus>>;
   selectedAgentName: string;
   selectedAgentConfigSet: AgentConfig[] | null;
   sendClientEvent: (eventObj: any, eventNameSuffix?: string) => void;
-  setSelectedAgentName: (name: string) => void;
-  setAgentMetadata: (metadata: AgentMetadata | null) => void;
+  setSelectedAgentName: Dispatch<SetStateAction<string>>;
+  setAgentMetadata: Dispatch<SetStateAction<AgentMetadata | null>>;
 
   // Transcript state and functions passed from component
   transcriptItems: TranscriptItem[];
-  addTranscriptMessage: AddTranscriptMessageType;
-  updateTranscriptMessage: UpdateTranscriptMessageType;
-  updateTranscriptItemStatus: UpdateTranscriptItemStatusType;
+  addTranscriptMessage: (itemId: string, role: "user" | "assistant" | "system", text: string, properties?: any[], agentName?: string) => void;
+  updateTranscriptMessage: (itemId: string, textDelta: string, isDelta: boolean) => void;
+  updateTranscriptItemStatus: (itemId: string, status: "IN_PROGRESS" | "DONE" | "ERROR") => void;
 
   // Optional configuration
   shouldForceResponse?: boolean;
 
   // --- New setters for UI control ---
-  setActiveDisplayMode: (mode: ActiveDisplayMode) => void;
-  setPropertyListData: (data: PropertyProps[] | null) => void;
-  setSelectedPropertyDetails: (data: PropertyProps | null) => void;
-  setPropertyGalleryData: (data: PropertyGalleryData | null) => void;
+  setActiveDisplayMode: Dispatch<SetStateAction<any>>;
+  setPropertyListData: Dispatch<SetStateAction<any | null>>;
+  setSelectedPropertyDetails: Dispatch<SetStateAction<any | null>>;
+  setPropertyGalleryData: Dispatch<SetStateAction<any | null>>;
+  setBookingDetails: Dispatch<SetStateAction<any | null>>;
 }
 
 export function useHandleServerEvent({
@@ -84,6 +86,7 @@ export function useHandleServerEvent({
   setPropertyListData,
   setSelectedPropertyDetails,
   setPropertyGalleryData,
+  setBookingDetails,
 }: UseHandleServerEventParams) {
   // Removed context hook calls
   // const { logServerEvent } = useEvent(); // Placeholder call - Logging can be added back if needed
@@ -226,6 +229,18 @@ export function useHandleServerEvent({
               console.log("[handleFunctionCall] Transitioning from VERIFICATION_SUCCESS to CHAT");
               setActiveDisplayMode('CHAT');
             }, 3000); // Show success message for 3 seconds 
+          } else if (fnResult.ui_display_hint === 'BOOKING_CONFIRMATION' && fnResult.booking_details) {
+            console.log(`[handleFunctionCall] BOOKING_CONFIRMATION hint - showing booking details card`);
+            if (setBookingDetails) {
+              setBookingDetails(fnResult.booking_details);
+            }
+            setActiveDisplayMode('BOOKING_CONFIRMATION');
+            
+            // Give enough time to see the booking details card
+            setTimeout(() => {
+              console.log(`[handleFunctionCall] Transitioning from BOOKING_CONFIRMATION to CHAT`);
+              setActiveDisplayMode('CHAT');
+            }, 10000); // 8 seconds delay to give more time to see the details
           }
           // If the mode is CHAT, data was already cleared.
         } else if (fnResult && !fnResult.destination_agent) {
@@ -240,32 +255,43 @@ export function useHandleServerEvent({
             setTimeout(() => {
               // If there's scheduling data, ensure we process it correctly
               const metadataAny = currentAgent.metadata as any;
-              if (metadataAny?.selectedDate && metadataAny?.selectedTime && metadataAny?.property_name) {
-                console.log("[handleFunctionCall] Found scheduling data after verification");
-                // Call completeScheduling to show the confirmation message
-                const toolFunction = currentAgent?.toolLogic?.completeScheduling;
-                if (typeof toolFunction === 'function') {
-                  console.log("[handleFunctionCall] Calling completeScheduling to show booking confirmation");
-                  toolFunction({}, transcriptItems || []).then((result: any) => {
-                    if (result.message) {
-                      const newMessageId = generateSafeId();
-                      sendClientEvent({
-                        type: "conversation.item.create", 
-                        item: {
-                          id: newMessageId,
-                          type: "message",
-                          role: "assistant",
-                          content: [{ type: "text", text: result.message }]
-                        }
-                      }, "(scheduling confirmation message)");
-                    }
-                  });
-                }
-              }
+              let hasTriggeredConfirmation = false;
               
-              // Finally transition to CHAT mode
-              setActiveDisplayMode('CHAT');
-            }, 3000); // Show verification success for 3 seconds
+              setTimeout(() => {
+                if (metadataAny?.selectedDate && metadataAny?.selectedTime && metadataAny?.property_name && !hasTriggeredConfirmation) {
+                  console.log("[handleFunctionCall] Found scheduling data after verification");
+                  hasTriggeredConfirmation = true;
+                  
+                  // Call completeScheduling to show the confirmation message
+                  const toolFunction = currentAgent?.toolLogic?.completeScheduling;
+                  if (typeof toolFunction === 'function') {
+                    console.log("[handleFunctionCall] Calling completeScheduling to show booking confirmation");
+                    toolFunction({}, transcriptItems || []).then((result: any) => {
+                      if (result.message) {
+                        const newMessageId = generateSafeId();
+                        sendClientEvent({
+                          type: "conversation.item.create", 
+                          item: {
+                            id: newMessageId,
+                            type: "message",
+                            role: "assistant",
+                            content: [{ type: "text", text: result.message }]
+                          }
+                        }, "(scheduling confirmation message)");
+                        
+                        // Set a small delay before transitioning to CHAT mode
+                        setTimeout(() => {
+                          setActiveDisplayMode('CHAT');
+                        }, 1000);
+                      }
+                    });
+                  }
+                } else {
+                  // If no scheduling data, just transition to CHAT mode
+                  setActiveDisplayMode('CHAT');
+                }
+              }, 3000);
+            }, 3000);
           } else {
             setActiveDisplayMode('CHAT');
           }
@@ -488,44 +514,35 @@ export function useHandleServerEvent({
               } else if (newAgentConfig && newAgentConfig.name === "realEstate" && fnResult.flow_context === "from_scheduling_verification") {
                 // Special handling for return to realEstate after scheduling verification
                 console.log("[handleFunctionCall] realEstate agent transfer after scheduling verification - triggering confirmation message");
+                
+                // Add a small delay to ensure the transfer is complete
                 setTimeout(() => {
-                  if (hasActiveResponseRef.current) {
-                    console.log("[handleFunctionCall] Cancelling active response before triggering new one for realEstate confirmation");
-                    sendClientEvent({ type: "response.cancel" }, "(cancelling before realEstate confirmation)");
-                    setTimeout(() => {
-                      const simulatedRealEstateMessageId = generateSafeId();
-                      const confirmationTriggerText = "Finalize scheduling confirmation"; // Specific text
-                      console.log(`[handleFunctionCall] Sending simulated message to realEstate agent: '${confirmationTriggerText}'`);
-                      sendClientEvent({
-                        type: "conversation.item.create",
-                        item: {
-                          id: simulatedRealEstateMessageId,
-                          type: "message",
-                          role: "user",
-                          content: [{ type: "input_text", text: confirmationTriggerText }]
-                        }
-                      }, "(simulated message for realEstate scheduling confirmation)");
-                      setTimeout(() => {
-                        sendClientEvent({ type: "response.create" }, "(auto-trigger response for realEstate confirmation)");
-                      }, 100);
-                    }, 100);
-                  } else {
+                    // Send the trigger message directly without checking active response
                     const simulatedRealEstateMessageId = generateSafeId();
-                    const confirmationTriggerText = "Finalize scheduling confirmation"; // Specific text
-                    console.log(`[handleFunctionCall] Sending simulated message to realEstate agent: '${confirmationTriggerText}'`);
-                    sendClientEvent({
-                      type: "conversation.item.create",
-                      item: {
-                        id: simulatedRealEstateMessageId,
-                        type: "message",
-                        role: "user",
-                        content: [{ type: "input_text", text: confirmationTriggerText }]
-                      }
-                    }, "(simulated message for realEstate scheduling confirmation)");
+                    const confirmationTriggerText = "Finalize scheduling confirmation";
+                    console.log(`[handleFunctionCall] Sending trigger message to realEstate agent: '${confirmationTriggerText}'`);
+                    
+                    // First cancel any active response
+                    sendClientEvent({ type: "response.cancel" }, "(cancelling before realEstate confirmation)");
+                    
+                    // Small delay after cancellation
                     setTimeout(() => {
-                      sendClientEvent({ type: "response.create" }, "(auto-trigger response for realEstate confirmation)");
+                        // Send the trigger message
+                        sendClientEvent({
+                            type: "conversation.item.create",
+                            item: {
+                                id: simulatedRealEstateMessageId,
+                                type: "message",
+                                role: "user",
+                                content: [{ type: "input_text", text: confirmationTriggerText }]
+                            }
+                        }, "(simulated message for realEstate scheduling confirmation)");
+                        
+                        // Small delay before creating response
+                        setTimeout(() => {
+                            sendClientEvent({ type: "response.create" }, "(auto-trigger response for realEstate confirmation)");
+                        }, 100);
                     }, 100);
-                  }
                 }, 200);
               }
             } else {
