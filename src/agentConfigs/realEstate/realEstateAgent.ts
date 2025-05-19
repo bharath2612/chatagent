@@ -1366,13 +1366,29 @@ const realEstateAgent: AgentConfig = {
         
         const metadata = realEstateAgent.metadata as any;
         
+        // Log all relevant scheduling data for debugging
+        console.log("[realEstateAgent.completeScheduling] Available scheduling data:", {
+            selectedDate: metadata?.selectedDate,
+            selectedTime: metadata?.selectedTime,
+            appointment_date: metadata?.appointment_date, // Check for alternative field names
+            appointment_time: metadata?.appointment_time,
+            appointment_id: metadata?.appointment_id,
+            customer_name: metadata?.customer_name,
+            property_name: metadata?.property_name,
+            property_id_to_schedule: metadata?.property_id_to_schedule
+        });
+        
+        // Get date and time - check both field name variations
+        const dateToUse = metadata?.selectedDate || metadata?.appointment_date;
+        const timeToUse = metadata?.selectedTime || metadata?.appointment_time;
+        
         // Check if we have scheduling data
-        if (metadata?.selectedDate && metadata?.selectedTime && metadata?.customer_name) {
+        if ((dateToUse || timeToUse) && metadata?.customer_name) {
             // Make sure we have a property name (use defaults if not available)
             const propertyName = metadata.property_name || "the property";
             
             // Create a friendly confirmation message
-            const confirmationMsg = `Great news, ${metadata.customer_name}! Your visit to ${propertyName} on ${metadata.selectedDate} at ${metadata.selectedTime} is confirmed! You'll receive all details shortly.`;
+            const confirmationMsg = `Great news, ${metadata.customer_name}! Your visit to ${propertyName} on ${dateToUse} at ${timeToUse} is confirmed! You'll receive all details shortly.`;
             console.log("[realEstateAgent.completeScheduling] Confirming schedule with: ", confirmationMsg);
             
             // Mark as scheduled in agent metadata
@@ -1382,9 +1398,13 @@ const realEstateAgent: AgentConfig = {
                 
                 // Clear flow context to prevent re-processing
                 delete (realEstateAgent.metadata as any).flow_context;
-                // Clear scheduling specifics from metadata after confirming
-                (realEstateAgent.metadata as AgentMetadata).selectedDate = undefined;
-                (realEstateAgent.metadata as AgentMetadata).selectedTime = undefined;
+                // Store actual date and time in standard fields for consistency
+                if (dateToUse && !metadata.selectedDate) {
+                    (realEstateAgent.metadata as any).selectedDate = dateToUse;
+                }
+                if (timeToUse && !metadata.selectedTime) {
+                    (realEstateAgent.metadata as any).selectedTime = timeToUse;
+                }
             }
             
             // Make API calls to notify about the scheduled visit
@@ -1421,7 +1441,7 @@ const realEstateAgent: AgentConfig = {
                     customerName: metadata.customer_name || "",
                     phoneNumber: metadata.phone_number?.startsWith("+") ? metadata.phone_number.substring(1) : metadata.phone_number || "",
                     propertyId: metadata.property_id_to_schedule || "",
-                    visitDateTime: `${metadata.selectedDate}, ${metadata.selectedTime}`,
+                    visitDateTime: `${dateToUse}, ${timeToUse}`,
                     chatbotId: metadata.chatbot_id || ""
                 };
                 
@@ -1455,8 +1475,8 @@ const realEstateAgent: AgentConfig = {
                 booking_details: {
                     customerName: metadata.customer_name,
                     propertyName: propertyName,
-                    date: metadata.selectedDate,
-                    time: metadata.selectedTime,
+                    date: dateToUse,
+                    time: timeToUse,
                     phoneNumber: metadata.phone_number
                 }
             };
@@ -1464,7 +1484,9 @@ const realEstateAgent: AgentConfig = {
             // Handle missing data case
             console.error("[realEstateAgent.completeScheduling] Missing required scheduling data", {
                 selectedDate: metadata?.selectedDate,
+                appointment_date: metadata?.appointment_date,
                 selectedTime: metadata?.selectedTime,
+                appointment_time: metadata?.appointment_time,
                 customer_name: metadata?.customer_name
             });
             
