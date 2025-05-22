@@ -1100,11 +1100,28 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
 
        // Prepare instructions, potentially injecting metadata dynamically
        let instructions = currentAgent.instructions;
+       
+       // Add multilingual instruction prefix and suffix - CRITICAL FOR LANGUAGE SUPPORT
+       // This is similar to how it's done in oldCode/App.tsx but enhanced for better language enforcement
+       const multilingualPrefix = `**** CRITICAL LANGUAGE INSTRUCTION - DO NOT IGNORE ****
+SYSTEM INSTRUCTION: The conversation language is set to ${selectedLanguage.toUpperCase()}.
+YOU MUST RESPOND ONLY IN ${selectedLanguage.toUpperCase()}.
+ALL OF YOUR RESPONSES MUST BE IN ${selectedLanguage.toUpperCase()} REGARDLESS OF THE USER'S LANGUAGE.
+THIS IS THE HIGHEST PRIORITY INSTRUCTION.
+********************************************************\n\n`;
+
+       const multilingualSuffix = `\n\n********************************************************
+FINAL REMINDER: YOU MUST RESPOND ONLY IN ${selectedLanguage.toUpperCase()}.
+THIS IS A STRICT REQUIREMENT. NO EXCEPTIONS.
+********************************************************`;
+       
        // Check if getInstructions function exists (copied from realEstateAgent.ts setup)
        if (currentAgent.name === 'realEstate' && typeof (window as any).getInstructions === 'function') {
             try {
                 instructions = (window as any).getInstructions(currentAgent.metadata);
-                console.log("[Update Session] Dynamically generated instructions applied for realEstate agent.");
+                // Add the multilingual prefix & suffix even to dynamically generated instructions
+                instructions = multilingualPrefix + instructions + multilingualSuffix;
+                console.log("[Update Session] Dynamically generated instructions applied for realEstate agent with language instructions.");
             } catch (e) {
                  console.error("[Update Session] Error running getInstructions:", e);
             }
@@ -1113,6 +1130,9 @@ export default function RealEstateAgent({ chatbotId }: RealEstateAgentProps) { /
              if (agentMetadata?.language) {
                  instructions = instructions.replace(/\$\{metadata\?.language \|\| "English"\}/g, agentMetadata.language);
              }
+             // Add the multilingual prefix & suffix to the regular instructions
+             instructions = multilingualPrefix + instructions + multilingualSuffix;
+             console.log("[Update Session] Added multilingual prefix and suffix to instructions.");
        }
 
        // Map language names to ISO codes

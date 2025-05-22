@@ -99,8 +99,16 @@ const getInstructions = (metadata: AgentMetadata | undefined | null) => {
 
   const projectList = safeMetadata.project_names.length > 0 ? safeMetadata.project_names.join(", ") : "(No projects specified)";
 
+  // Get the customer's selected language - ensure this is prominently used
+  const userLanguage = safeMetadata.language || "English";
+
   // Restore instructions closer to the original logic provided, adding UI hint guidance
-  return `You are a helpful real estate agent representing ${safeMetadata.org_name}. 
+  return `***** CRITICAL LANGUAGE INSTRUCTION *****
+YOU MUST RESPOND ONLY IN ${userLanguage.toUpperCase()}. ALL YOUR RESPONSES MUST BE IN ${userLanguage.toUpperCase()}. 
+THIS IS THE USER'S SELECTED LANGUAGE AND YOU MUST STRICTLY ADHERE TO IT THROUGHOUT THE ENTIRE CONVERSATION.
+*****************************************
+
+You are a helpful real estate agent representing ${safeMetadata.org_name}. 
 
 Your company manages the following properties: ${projectList}
 
@@ -119,8 +127,7 @@ Your responsibilities include:
 6. Updating the internally focused property using 'updateActiveProject'.
 7. Retrieving property images using 'getPropertyImages'.
 
-LANGUAGE INSTRUCTIONS:
-- Respond ONLY in ${safeMetadata.language || "English"}.
+**CRITICAL LANGUAGE REQUIREMENT: YOU MUST RESPOND ONLY IN ${userLanguage.toUpperCase()}**
 - **STYLE:** fun-casual, like you're chatting with a friend.
 - **LENGTH:** absolute maximum 2 short sentences (≈ 30 words). Never write paragraphs.
 - Keep answers concise, especially when property cards (PROPERTY_LIST) or images (IMAGE_GALLERY) are being displayed by the UI based on your tool results. Let the UI show the details.
@@ -145,6 +152,8 @@ TOOL USAGE & UI HINTS:
 - **Other Tools ('calculateRoute', 'findNearestPlace'):** These likely return ui_display_hint: 'CHAT'. Present their results textually.
 
 CRITICAL FLOW RULES: 
+- IF A USER'S MESSAGE IS A GREETING (e.g., "Hi", "Hello") at the start of a conversation, respond with: "Hi! Would you like to know more about our properties?"
+- IF, AFTER YOU'VE ASKED "Hi! Would you like to know more about our properties?", THE USER RESPONDS AFFIRMATIVELY (e.g., "yes", "sure", "okay", "please"), THEN YOU MUST call the 'getProjectDetails' tool without any filters. The tool's result will include a 'ui_display_hint: PROPERTY_LIST' (which triggers card display) and the text message to be shown to the user (e.g., "Here are the properties I found..."). Do not generate your own text response in this situation; rely on the tool's provided message.
 - If the user is ALREADY VERIFIED, NEVER transfer to authentication.
 - ONLY transfer to authentication if is_verified is false AND 'trackUserMessage' indicates it.
 - ONLY ask about scheduling a visit if is_verified is true AND has_scheduled is false AND 'trackUserMessage' indicates it.
@@ -164,6 +173,8 @@ SCHEDULING INTENT DETECTION:
 - When you detect ANY scheduling intent, IMMEDIATELY call 'initiateScheduling'. Do NOT wait for a precise phrasing or a button click.
 - If the user expresses interest in a specific property AND a scheduling intent, make sure to include the property_id when calling 'initiateScheduling'.
 - Pay attention to context - if the user has just been viewing details of a specific property and then expresses scheduling intent, assume they want to schedule for that property.
+
+**FINAL LANGUAGE REMINDER: ALL YOUR RESPONSES MUST BE IN ${userLanguage}.**
 `;
 };
 
@@ -1364,13 +1375,29 @@ const realEstateAgent: AgentConfig = {
         
         const metadata = realEstateAgent.metadata as any;
         
+        // Log all relevant scheduling data for debugging
+        console.log("[realEstateAgent.completeScheduling] Available scheduling data:", {
+            selectedDate: metadata?.selectedDate,
+            selectedTime: metadata?.selectedTime,
+            appointment_date: metadata?.appointment_date, // Check for alternative field names
+            appointment_time: metadata?.appointment_time,
+            appointment_id: metadata?.appointment_id,
+            customer_name: metadata?.customer_name,
+            property_name: metadata?.property_name,
+            property_id_to_schedule: metadata?.property_id_to_schedule
+        });
+        
+        // Get date and time - check both field name variations
+        const dateToUse = metadata?.selectedDate || metadata?.appointment_date;
+        const timeToUse = metadata?.selectedTime || metadata?.appointment_time;
+        
         // Check if we have scheduling data
-        if (metadata?.selectedDate && metadata?.selectedTime && metadata?.customer_name) {
+        if ((dateToUse || timeToUse) && metadata?.customer_name) {
             // Make sure we have a property name (use defaults if not available)
             const propertyName = metadata.property_name || "the property";
             
             // Create a friendly confirmation message
-            const confirmationMsg = `Great news, ${metadata.customer_name}! Your visit to ${propertyName} on ${metadata.selectedDate} at ${metadata.selectedTime} is confirmed! You'll receive all details shortly.`;
+            const confirmationMsg = `Great news, ${metadata.customer_name}! Your visit to ${propertyName} on ${dateToUse} at ${timeToUse} is confirmed! You'll receive all details shortly.`;
             console.log("[realEstateAgent.completeScheduling] Confirming schedule with: ", confirmationMsg);
             
             // Mark as scheduled in agent metadata
@@ -1380,9 +1407,13 @@ const realEstateAgent: AgentConfig = {
                 
                 // Clear flow context to prevent re-processing
                 delete (realEstateAgent.metadata as any).flow_context;
-                // Clear scheduling specifics from metadata after confirming
-                (realEstateAgent.metadata as AgentMetadata).selectedDate = undefined;
-                (realEstateAgent.metadata as AgentMetadata).selectedTime = undefined;
+                // Store actual date and time in standard fields for consistency
+                if (dateToUse && !metadata.selectedDate) {
+                    (realEstateAgent.metadata as any).selectedDate = dateToUse;
+                }
+                if (timeToUse && !metadata.selectedTime) {
+                    (realEstateAgent.metadata as any).selectedTime = timeToUse;
+                }
             }
             
             // Make API calls to notify about the scheduled visit
@@ -1419,7 +1450,7 @@ const realEstateAgent: AgentConfig = {
                     customerName: metadata.customer_name || "",
                     phoneNumber: metadata.phone_number?.startsWith("+") ? metadata.phone_number.substring(1) : metadata.phone_number || "",
                     propertyId: metadata.property_id_to_schedule || "",
-                    visitDateTime: `${metadata.selectedDate}, ${metadata.selectedTime}`,
+                    visitDateTime: `${dateToUse}, ${timeToUse}`,
                     chatbotId: metadata.chatbot_id || ""
                 };
                 
@@ -1453,8 +1484,8 @@ const realEstateAgent: AgentConfig = {
                 booking_details: {
                     customerName: metadata.customer_name,
                     propertyName: propertyName,
-                    date: metadata.selectedDate,
-                    time: metadata.selectedTime,
+                    date: dateToUse,
+                    time: timeToUse,
                     phoneNumber: metadata.phone_number
                 }
             };
@@ -1462,7 +1493,9 @@ const realEstateAgent: AgentConfig = {
             // Handle missing data case
             console.error("[realEstateAgent.completeScheduling] Missing required scheduling data", {
                 selectedDate: metadata?.selectedDate,
+                appointment_date: metadata?.appointment_date,
                 selectedTime: metadata?.selectedTime,
+                appointment_time: metadata?.appointment_time,
                 customer_name: metadata?.customer_name
             });
             

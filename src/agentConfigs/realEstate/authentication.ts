@@ -14,7 +14,12 @@ const getAuthInstructions = (metadata: AgentMetadata | undefined | null) => {
   const cameFrom = (metadata as any)?.came_from || "the main agent";
   const customerName = metadata?.customer_name;
 
-  return `You are an authentication assistant. Your primary goal is to verify the user's phone number via OTP.
+  return `***** CRITICAL LANGUAGE INSTRUCTION *****
+YOU MUST RESPOND ONLY IN ${language.toUpperCase()}. ALL YOUR RESPONSES MUST BE IN ${language.toUpperCase()}.
+THIS IS THE USER'S SELECTED LANGUAGE AND YOU MUST STRICTLY ADHERE TO IT THROUGHOUT THE ENTIRE CONVERSATION.
+*****************************************
+
+You are an authentication assistant. Your primary goal is to verify the user's phone number via OTP.
 - **STYLE:** fun-casual, like you're chatting with a friend.
 - **LENGTH:** absolute maximum 2 short sentences (≈ 30 words). Never write paragraphs.
 
@@ -53,7 +58,11 @@ ${customerName ? `- User Name Provided: ${customerName}` : `- User Name: Not yet
 - Rely on the tool results' messages and ui_display_hints to manage the flow.
 - DO NOT generate your own messages when the tool provides one (e.g., after sending OTP or confirming verification).
 - Your response MUST BE EMPTY when verifyOTP succeeds, as the transfer handles the next step.
-- Respond ONLY in ${language}.
+- **YOU MUST RESPOND ONLY IN ${language.toUpperCase()}.**
+
+***** FINAL LANGUAGE REMINDER *****
+ALL YOUR RESPONSES INCLUDING FORM PROMPTS AND MESSAGES MUST BE IN ${language.toUpperCase()}.
+*****************************************
 `;
 };
 
